@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signalpost · Norwegian company profiles</title>
+<meta name="description" content="Search, verify and compare evidence-backed profiles of Norwegian companies.">
+<style>
+:root{
+  --bg:#f6f7f9;--panel:#fff;--ink:#16202b;--muted:#5a6573;--line:#dde2e8;--accent:#0b5cad;--accent-ink:#fff;
+  --ok:#11683a;--ok-bg:#e3f4ea;--warn:#8a5300;--warn-bg:#fdf0d8;--bad:#a1261b;--bad-bg:#fbe5e2;--na:#4c5664;--na-bg:#eceff3;
+  --radius:12px;--shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f141a;--panel:#171e26;--ink:#e7ecf2;--muted:#a3adba;--line:#2a333e;--accent:#6cb2ff;--accent-ink:#0b1420;
+  --ok:#7fd8a4;--ok-bg:#163527;--warn:#ffcf7a;--warn-bg:#3a2c12;--bad:#ff9d91;--bad-bg:#3e1d19;--na:#c1c9d3;--na-bg:#252d37;--shadow:none}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 var(--font)}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:4px}
+.skip{position:absolute;left:-999px;top:8px;background:var(--panel);padding:8px 12px;z-index:10}
+.skip:focus{left:8px}
+header.top{background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.top-inner{max-width:1180px;margin:0 auto;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:700;font-size:18px;color:var(--ink);text-decoration:none;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.brand .dot{width:12px;height:12px;border-radius:50%;background:var(--accent);display:inline-block}
+.top nav{display:flex;gap:4px;margin-left:auto}
+.top nav a{padding:6px 10px;border-radius:8px;text-decoration:none;color:var(--muted);font-weight:600;font-size:14px}
+.top nav a[aria-current="page"]{background:var(--na-bg);color:var(--ink)}
+main{max-width:1180px;margin:0 auto;padding:16px 16px 120px}
+h1{font-size:clamp(22px,4vw,30px);line-height:1.2;margin:4px 0 6px;overflow-wrap:anywhere}
+h2{font-size:19px;margin:0 0 10px}
+h3{font-size:15px;margin:14px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;margin:0 0 16px;min-width:0}
+.searchbar{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:end}
+.searchbar label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:4px}
+input[type=search],select,input[type=text]{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);min-height:44px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chip-toggle{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:14px;cursor:pointer;background:var(--panel);min-height:36px}
+.chip-toggle input{accent-color:var(--accent);width:16px;height:16px;margin:0}
+.count{margin:12px 2px;color:var(--muted);font-size:14px}
+.list{display:grid;gap:10px}
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px}
+.row h2{font-size:16px;margin:0;overflow-wrap:anywhere}
+.row h2 a{text-decoration:none;color:var(--ink)}
+.row h2 a:hover{text-decoration:underline}
+.meta{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--na-bg);color:var(--na);white-space:nowrap}
+.badge.ok{background:var(--ok-bg);color:var(--ok)}
+.btn{font:inherit;font-weight:600;font-size:14px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:10px;padding:8px 12px;cursor:pointer;min-height:40px;text-decoration:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn[aria-pressed="true"]{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.tray{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,0,0,.08);z-index:6}
+.tray-inner{max-width:1180px;margin:0 auto;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.tray .sel{flex:1 1 220px;min-width:0;font-size:14px;overflow-wrap:anywhere}
+.state{display:inline-block;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.state.available{background:var(--ok-bg);color:var(--ok)}
+.state.not_available,.state.not_applicable{background:var(--na-bg);color:var(--na)}
+.state.ambiguous,.state.blocked{background:var(--warn-bg);color:var(--warn)}
+.state.failed{background:var(--bad-bg);color:var(--bad)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0 0}
+.kpi{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.kpi .k{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.kpi .v{font-size:18px;font-weight:700;overflow-wrap:anywhere}
+.kpi .s{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.toc{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 0}
+.toc button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--accent);padding:6px 10px;border-radius:999px;cursor:pointer;min-height:34px}
+.syn p{margin:0 0 8px;overflow-wrap:anywhere}
+p,li,dd,td,.meta,.span{overflow-wrap:anywhere}
+.syn .sec{margin-bottom:12px}
+.cite{font:inherit;font-size:11px;font-weight:700;vertical-align:super;line-height:1;border:1px solid var(--line);background:var(--na-bg);color:var(--accent);border-radius:6px;padding:2px 4px;margin-left:2px;cursor:pointer}
+.sources ol{padding-left:22px;margin:0}
+.sources li{margin:0 0 10px;overflow-wrap:anywhere;border-radius:8px;padding:4px 6px}
+.sources li.flash{background:var(--warn-bg)}
+.span{display:block;font-size:13px;color:var(--muted);border-left:3px solid var(--line);padding-left:8px;margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;vertical-align:top;padding:8px;border-top:1px solid var(--line);overflow-wrap:anywhere}
+th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;border-top:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.facts td:nth-child(1){width:24%;font-weight:600}
+.facts td:nth-child(3){width:1%;white-space:nowrap}
+.facts td:nth-child(4){width:26%}
+.unk li{margin-bottom:6px}
+.cmp-pick{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cmp td{width:38%}
+.cmp td:first-child{width:24%;font-weight:600}
+.cmp .src{display:block;font-size:12px}
+.cmp .span{display:none}
+.empty{padding:24px;text-align:center;color:var(--muted)}
+footer{max-width:1180px;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:13px}
+@media (max-width:720px){
+  .searchbar{grid-template-columns:1fr 1fr}
+  .searchbar .q{grid-column:1/-1}
+  .row{grid-template-columns:1fr}
+  .row .actions{display:flex;gap:8px}
+  .row .actions .btn{flex:1;justify-content:center}
+  .facts thead{display:none}
+  .facts tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;border-top:1px solid var(--line);padding:8px 0}
+  .facts td{display:block;border:0;padding:0;width:auto!important;white-space:normal!important;min-width:0}
+  .facts td:nth-child(1){grid-column:1/-1;font-size:13px;color:var(--muted)}
+  .facts td:nth-child(3){align-self:start}
+  .facts td:nth-child(4){grid-column:1/-1;font-size:12px}
+  .cmp-pick{grid-template-columns:1fr}
+  .cmp thead{display:none}
+  .cmp tr{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;border-top:1px solid var(--line);padding:8px 0}
+  .cmp td{display:block;border:0;padding:0;width:auto!important}
+  .cmp td:first-child{grid-column:1/-1;font-size:13px;color:var(--muted)}
+  .top nav a{padding:6px 8px}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main" onclick="event.preventDefault();document.getElementById('main').focus()">Skip to content</a>
+<header class="top"><div class="top-inner">
+  <a class="brand" href="#/"><span class="dot" aria-hidden="true"></span>Signalpost</a>
+  <nav aria-label="Primary"><a href="#/" data-nav="list">Companies</a><a href="#/compare" data-nav="compare">Compare</a><a href="#/about" data-nav="about">How to verify</a></nav>
+</div></header>
+<main id="main" tabindex="-1"></main>
+<div class="tray" id="tray" hidden><div class="tray-inner" role="region" aria-label="Comparison selection"></div></div>
+<div aria-live="polite" class="skip" id="live"></div>
+<footer>Every fact links to the public source it was read from, with its retrieval time and availability state. Missing information is shown as missing, never as zero.</footer>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(() => {
+"use strict";
+const DATA = JSON.parse(document.getElementById("data").textContent);
+const C = DATA.companies;
+const BY = Object.fromEntries(C.map(c => [c.org, c]));
+const DATASETS = [...new Set(C.map(c => c.ds))];
+const main = document.getElementById("main");
+const live = document.getElementById("live");
+const state = {q: "", ds: "", f: {web: false, jobs: false, news: false}, sort: "name", limit: 50, pick: []};
+const STATE_LABEL = {available: "available", not_available: "not available", not_applicable: "not applicable", ambiguous: "ambiguous", blocked: "blocked", failed: "failed"};
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch]));
+const nf = new Intl.NumberFormat("en-GB");
+const money = (v, cur) => v === null || v === undefined ? null : `${cur || "NOK"} ${nf.format(v)}`;
+const host = u => { try { return new URL(u).host.replace(/^www\./, ""); } catch { return u || ""; } };
+const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
+const fmtAt = t => { const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::[\d.]+)?Z$/.exec(String(t || "")); return m ? `${m[1]} ${m[2]} UTC` : (t || ""); };
+const chip = s => `<span class="state ${esc(s)}">${esc(STATE_LABEL[s] || s)}</span>`;
+const srcLink = (src, text) => {
+  if (!src || !src.url) return '<span class="muted small">no source</span>';
+  const u = safeUrl(src.link) || safeUrl(src.url);
+  const label = text || host(src.url);
+  return `${u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>` : esc(label)}<span class="muted small"> · retrieved ${esc(fmtAt(src.at) || "date not reported")}${src.period ? ` · period ${esc(src.period)}` : ""}${src.changed ? ` · changed ${esc(src.changed)}` : ""}</span>${src.span ? `<span class="span">“${esc(src.span)}”</span>` : ""}`;
+};
+const norm = s => String(s || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+const digits = s => String(s || "").replace(/\D/g, "");
+
+function setNav(name) {
+  document.querySelectorAll("[data-nav]").forEach(a => { if (a.dataset.nav === name) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+}
+
+function valueHtml(f) {
+  const v = f.v;
+  if (v === null || v === undefined || v === "") return `<span class="muted">—${f.n ? ` ${esc(f.n)}` : ""}</span>`;
+  if (typeof v === "object" && "money" in v) return `<span class="num">${esc(money(v.money, v.cur))}</span>`;
+  const s = String(v);
+  const body = safeUrl(s) ? `<a href="${esc(s)}" target="_blank" rel="noopener noreferrer">${esc(s)}</a>` : esc(s);
+  return body + (f.n ? `<div class="muted small">${esc(f.n)}</div>` : "");
+}
+
+/* ---------- list ---------- */
+function filtered() {
+  const q = norm(state.q).trim(), qd = digits(state.q);
+  let rows = C.filter(c => (!state.ds || c.ds === state.ds)
+    && (!state.f.web || c.web) && (!state.f.jobs || c.jobs > 0) && (!state.f.news || c.news > 0)
+    && (!q || norm(c.name).includes(q) || (qd.length >= 3 && c.org.includes(qd)) || norm(c.city).includes(q) || norm(c.naceLabel).includes(q)));
+  const key = {name: c => c.name || "", rev: c => -(c.rev ?? -Infinity), emp: c => -(c.emp ?? -Infinity)}[state.sort];
+  rows.sort((a, b) => { const x = key(a), y = key(b); return x < y ? -1 : x > y ? 1 : 0; });
+  return rows;
+}
+
+function renderList() {
+  setNav("list");
+  document.title = "Signalpost · Norwegian company profiles";
+  main.innerHTML = `
+  <section class="panel" aria-labelledby="find-h">
+    <h1 id="find-h">Find a company</h1>
+    <p class="muted small" style="margin-top:0">${C.length} companies from ${DATASETS.map(esc).join(", ")}. Search by name, organisation number, town or industry.</p>
+    <div class="searchbar">
+      <div class="q"><label for="q">Name or organisation number</label><input id="q" type="search" autocomplete="off" placeholder="e.g. Flexibemanning or 931 015 737" value="${esc(state.q)}"></div>
+      <div><label for="ds">Run</label><select id="ds"><option value="">All runs</option>${DATASETS.map(d => `<option ${d === state.ds ? "selected" : ""}>${esc(d)}</option>`).join("")}</select></div>
+      <div><label for="sort">Sort by</label><select id="sort"><option value="name">Name</option><option value="rev">Revenue</option><option value="emp">Employees</option></select></div>
+    </div>
+    <div class="filters" role="group" aria-label="Filters">
+      <label class="chip-toggle"><input type="checkbox" data-f="web" ${state.f.web ? "checked" : ""}> Verified website</label>
+      <label class="chip-toggle"><input type="checkbox" data-f="jobs" ${state.f.jobs ? "checked" : ""}> Hiring</label>
+      <label class="chip-toggle"><input type="checkbox" data-f="news" ${state.f.news ? "checked" : ""}> News posts</label>
+    </div>
+  </section>
+  <p class="count" id="count" aria-live="polite"></p>
+  <div class="list" id="results"></div>
+  <div id="more"></div>`;
+  document.getElementById("sort").value = state.sort;
+  const q = document.getElementById("q");
+  q.addEventListener("input", () => { state.q = q.value; state.limit = 50; drawRows(); });
+  document.getElementById("ds").addEventListener("change", e => { state.ds = e.target.value; drawRows(); });
+  document.getElementById("sort").addEventListener("change", e => { state.sort = e.target.value; drawRows(); });
+  main.querySelectorAll("[data-f]").forEach(cb => cb.addEventListener("change", () => { state.f[cb.dataset.f] = cb.checked; drawRows(); }));
+  drawRows();
+}
+
+function rowHtml(c) {
+  const picked = state.pick.includes(c.org);
+  const b = [];
+  if (c.web) b.push(`<span class="badge ok">✓ Verified site</span>`);
+  if (c.jobs) b.push(`<span class="badge ok">${c.jobs} job ad${c.jobs > 1 ? "s" : ""}</span>`);
+  if (c.news) b.push(`<span class="badge">${c.news} news post${c.news > 1 ? "s" : ""}</span>`);
+  if (c.rev !== null && c.rev !== undefined) b.push(`<span class="badge">Revenue ${esc(money(c.rev))}</span>`);
+  if (c.emp !== null && c.emp !== undefined) b.push(`<span class="badge">${nf.format(c.emp)} employees</span>`);
+  return `<article class="row" aria-labelledby="n-${c.org}">
+    <div><h2 id="n-${c.org}"><a href="#/c/${c.org}">${esc(c.name)}</a></h2>
+      <div class="meta">Org. no. ${esc(c.org)} · ${esc(c.form || "")} · ${esc(c.city || "—")} · ${esc(c.naceLabel || "")}</div>
+      <div class="badges">${b.join("")}</div></div>
+    <div class="actions"><a class="btn" href="#/c/${c.org}">Open</a><button class="btn" type="button" data-pick="${c.org}" aria-pressed="${picked}">${picked ? "✓ Comparing" : "Compare"}</button></div>
+  </article>`;
+}
+
+function drawRows() {
+  const rows = filtered();
+  document.getElementById("count").textContent = `${rows.length} compan${rows.length === 1 ? "y matches" : "ies match"}`;
+  const el = document.getElementById("results");
+  el.innerHTML = rows.length ? rows.slice(0, state.limit).map(rowHtml).join("") : `<div class="panel empty">No company matches. Try fewer letters or the 9-digit organisation number.</div>`;
+  const more = document.getElementById("more");
+  more.innerHTML = rows.length > state.limit ? `<p style="text-align:center"><button class="btn" type="button" id="morebtn">Show ${Math.min(50, rows.length - state.limit)} more</button></p>` : "";
+  if (rows.length > state.limit) document.getElementById("morebtn").onclick = () => { state.limit += 50; drawRows(); };
+  el.querySelectorAll("[data-pick]").forEach(btn => btn.onclick = () => togglePick(btn.dataset.pick));
+}
+
+function togglePick(org) {
+  const i = state.pick.indexOf(org);
+  if (i >= 0) state.pick.splice(i, 1); else { state.pick.push(org); if (state.pick.length > 2) state.pick.shift(); }
+  live.textContent = `${state.pick.length} of 2 companies selected for comparison`;
+  drawTray();
+  document.querySelectorAll("[data-pick]").forEach(b => { const p = state.pick.includes(b.dataset.pick); b.setAttribute("aria-pressed", p); b.textContent = p ? "✓ Comparing" : "Compare"; });
+}
+
+function drawTray() {
+  const tray = document.getElementById("tray");
+  const inner = tray.querySelector(".tray-inner");
+  const onCompare = location.hash.startsWith("#/compare");
+  if (!state.pick.length || onCompare) { tray.hidden = true; return; }
+  tray.hidden = false;
+  inner.innerHTML = `<div class="sel"><strong>Compare:</strong> ${state.pick.map(o => esc(BY[o]?.name)).join(" <span class='muted'>vs</span> ")}${state.pick.length < 2 ? ' <span class="muted">– pick one more</span>' : ""}</div>
+    <a class="btn primary" href="#/compare/${state.pick.join("/")}">Compare${state.pick.length < 2 ? "…" : " side by side"}</a>
+    <button class="btn" type="button" id="clearpick">Clear</button>`;
+  document.getElementById("clearpick").onclick = () => { state.pick = []; drawTray(); document.querySelectorAll("[data-pick]").forEach(b => { b.setAttribute("aria-pressed", "false"); b.textContent = "Compare"; }); };
+}
+
+/* ---------- profile ---------- */
+function renderCompany(org) {
+  const c = BY[org];
+  setNav("list");
+  if (!c) { main.innerHTML = `<div class="panel empty">No company with organisation number ${esc(org)} in this dataset. <a href="#/">Back to search</a></div>`; return; }
+  document.title = `${c.name} · Signalpost`;
+  const picked = state.pick.includes(c.org);
+  const kpi = (k, v, s) => `<div class="kpi"><div class="k">${esc(k)}</div><div class="v">${v}</div><div class="s">${s || ""}</div></div>`;
+  const groups = [...new Set(c.facts.map(f => f.g))];
+  const syn = c.syn || {};
+  const changed = syn.changed || {};
+  main.innerHTML = `
+  <p style="margin:0 0 8px"><a href="#/">← All companies</a></p>
+  <section class="panel" aria-labelledby="co-h">
+    <h1 id="co-h">${esc(c.name)}</h1>
+    <div class="meta">Org. no. <strong>${esc(c.org)}</strong> · ${esc(c.form || "")} · ${esc(c.city || "")} · NACE ${esc(c.nace || "—")} ${esc(c.naceLabel || "")}</div>
+    <div class="meta">Run <strong>${esc(c.ds)}</strong> · registry retrieved ${esc(fmtAt(c.retrieved) || "—")}</div>
+    <div class="kpis">
+      ${kpi("Revenue", c.rev !== null && c.rev !== undefined ? esc(money(c.rev)) : '<span class="muted">not reported</span>', c.period ? `period ${esc(c.period)} · ${srcLink(c.finSrc, "annual accounts")}` : "")}
+      ${kpi("Net result", c.res !== null && c.res !== undefined ? esc(money(c.res)) : '<span class="muted">not reported</span>', c.period ? `period ${esc(c.period)}` : "")}
+      ${kpi("Employees (register)", c.emp !== null && c.emp !== undefined ? nf.format(c.emp) : '<span class="muted">not published</span>', "")}
+      ${kpi("Official website", c.web ? `<a href="${esc(safeUrl(c.web))}" target="_blank" rel="noopener noreferrer">${esc(host(c.web))}</a>` : '<span class="muted">none verified</span>', c.web ? "identity-verified" : "")}
+    </div>
+    <div class="toc" role="navigation" aria-label="Sections">
+      ${["summary:Summary", "changes:What changed", "unknowns:Unknowns", "facts:All facts", "fin:Financial history", "sources:Sources"].map(x => { const [id, t] = x.split(":"); return `<button type="button" data-jump="${id}">${t}</button>`; }).join("")}
+      <button type="button" class="btn" data-pick="${c.org}" aria-pressed="${picked}" style="margin-left:auto">${picked ? "✓ Comparing" : "Compare"}</button>
+    </div>
+  </section>
+
+  <section class="panel syn" id="summary" aria-labelledby="sum-h">
+    <h2 id="sum-h">Summary</h2>
+    <p class="muted small" style="margin-top:-4px">Generated only from the evidence below (${esc(syn.method || "")}; ${esc(syn.checked ?? 0)} statements, each checked against its cited sources). Tap a citation to see its source.</p>
+    ${syn.narrative ? `<div class="sec"><h3>Overview</h3><p>${citeify(syn.narrative)}</p></div>` : ""}
+    ${(syn.sections || []).map(s => `<div class="sec"><h3>${esc(s.t)}</h3>${s.st.map(st => `<p>${esc(st.x)}${st.c.map(id => citeBtn(id)).join("")}</p>`).join("")}</div>`).join("")}
+  </section>
+
+  <section class="panel" id="changes" aria-labelledby="chg-h">
+    <h2 id="chg-h">What changed</h2>
+    <p>${esc(changed.text || "No refresh information.")}</p>
+    ${(syn.sections || []).filter(s => s.k === "what_changed" || s.k === "recent_activity").map(s => s.st.map(st => `<p>${esc(st.x)}${st.c.map(id => citeBtn(id)).join("")}</p>`).join("")).join("")}
+    ${c.refresh && c.refresh.previous && c.refresh.previous.path ? `<p class="muted small">Compared with previous snapshot <code>${esc(c.refresh.previous.path)}</code>${c.refresh.previous.previous_registry_retrieved_at ? ` (retrieved ${esc(fmtAt(c.refresh.previous.previous_registry_retrieved_at))})` : ""}.</p>` : ""}
+    ${c.changes.length ? `<div class="tablewrap"><table><thead><tr><th>Field</th><th>Type</th><th>Before</th><th>Now</th><th>Source</th></tr></thead><tbody>${c.changes.map(ch => `<tr><td>${esc(ch.f)}</td><td>${ch.m === false ? '<span class="state blocked">re-check failed (not a change)</span>' : esc(ch.t || "changed")}</td><td>${esc(ch.old ?? "(list)")}</td><td>${esc(ch.new ?? "(list)")}</td><td>${srcLink({url: ch.url, at: ch.at})}</td></tr>`).join("")}</tbody></table></div>` : ""}
+  </section>
+
+  <section class="panel unk" id="unknowns" aria-labelledby="unk-h">
+    <h2 id="unk-h">What is unknown</h2>
+    ${syn.unknowns && syn.unknowns.length ? `<ul>${syn.unknowns.map(u => `<li><strong>${esc(u.l)}</strong> ${chip(u.s)}<div class="muted small">${esc(u.r || "")}</div></li>`).join("")}</ul>` : "<p>Every tracked information type has supported evidence.</p>"}
+  </section>
+
+  <section class="panel" id="facts" aria-labelledby="facts-h">
+    <h2 id="facts-h">All facts with sources</h2>
+    ${groups.map(g => `<h3>${esc(g)}</h3><table class="facts"><thead><tr><th scope="col">Fact</th><th scope="col">Value</th><th scope="col">Status</th><th scope="col">Source</th></tr></thead><tbody>
+      ${c.facts.filter(f => f.g === g).map(f => `<tr><td>${esc(f.l)}</td><td>${valueHtml(f)}</td><td>${chip(f.s)}</td><td class="small">${srcLink(f.src)}</td></tr>`).join("")}</tbody></table>`).join("")}
+  </section>
+
+  <section class="panel" id="fin" aria-labelledby="fin-h">
+    <h2 id="fin-h">Financial history</h2>
+    ${c.fin.length ? `<div class="tablewrap"><table><thead><tr><th>Period</th><th>Type</th><th class="num">Revenue</th><th class="num">Operating result</th><th class="num">Net result</th><th class="num">Assets</th><th class="num">Equity</th><th class="num">Debt</th></tr></thead><tbody>
+      ${c.fin.map(r => `<tr><td>${esc(r.from)} – ${esc(r.to)}</td><td>${esc(r.type === "SELSKAP" ? "Company" : r.type === "KONSERN" ? "Group" : r.type)}</td>${["revenue", "operating_result", "annual_result", "assets", "equity", "debt"].map(k => `<td class="num">${r[k] === null || r[k] === undefined ? '<span class="muted" title="not reported – not zero">n/r</span>' : esc(nf.format(r[k]))}</td>`).join("")}</tr>`).join("")}
+      </tbody></table></div><p class="muted small">Amounts in ${esc(c.fin[0].cur || "NOK")}. n/r = not reported in the filing (never shown as zero). Source: ${srcLink(c.finSrc, "Regnskapsregisteret")}</p>` : `<p>${chip("not_available")} No filed annual accounts were returned.</p>`}
+  </section>
+
+  <section class="panel sources" id="sources" aria-labelledby="src-h">
+    <h2 id="src-h">Sources</h2>
+    <ol>${(syn.sources || []).map(s => `<li id="src-${esc(s.id)}" tabindex="-1"><strong>[${esc(s.id)}] ${esc(s.label)}</strong><br>${safeUrl(s.source_url) ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(s.source_url)}</a>` : esc(s.source_url)}<div class="muted small">retrieved ${esc(fmtAt(s.retrieved_at) || "—")} · ${esc(s.source_class || "")}${s.content_sha256 ? ` · sha256 ${esc(s.content_sha256.slice(0, 12))}…` : ""}</div>${s.claim_span ? `<span class="span">“${esc(s.claim_span)}”</span>` : ""}</li>`).join("")}</ol>
+  </section>`;
+  main.querySelectorAll("[data-jump]").forEach(b => b.onclick = () => { const t = document.getElementById(b.dataset.jump); t.scrollIntoView({behavior: "smooth", block: "start"}); t.setAttribute("tabindex", "-1"); t.focus({preventScroll: true}); });
+  main.querySelectorAll("[data-cite]").forEach(b => b.onclick = () => jumpCite(b.dataset.cite));
+  main.querySelectorAll("[data-pick]").forEach(btn => btn.onclick = () => togglePick(btn.dataset.pick));
+  window.scrollTo(0, 0);
+}
+function citeBtn(id) { return `<button type="button" class="cite" data-cite="${esc(id)}" aria-label="Source ${esc(id)}">${esc(id)}</button>`; }
+function citeify(text) { return esc(text).replace(/\[(S\d+)\]/g, (_, id) => citeBtn(id)); }
+function jumpCite(id) {
+  const li = document.getElementById(`src-${id}`);
+  if (!li) return;
+  li.scrollIntoView({behavior: "smooth", block: "center"});
+  li.classList.add("flash"); li.focus({preventScroll: true});
+  setTimeout(() => li.classList.remove("flash"), 1600);
+}
+
+/* ---------- compare ---------- */
+function renderCompare(a, b) {
+  setNav("compare");
+  document.title = "Compare companies · Signalpost";
+  const A = BY[a], B = BY[b];
+  const opts = C.map(c => `<option value="${esc(c.name)} · ${c.org}"></option>`).join("");
+  const cell = (c, fn) => c ? fn(c) : '<span class="muted">—</span>';
+  const fact = (c, group, labelStart) => { const f = c.facts.find(x => x.g === group && x.l.startsWith(labelStart)); return f ? `${valueHtml(f)} ${f.s !== "available" ? chip(f.s) : ""}<span class="src small">${srcLink(f.src)}</span>` : chip("not_available"); };
+  const rows = [
+    ["Organisation number", c => esc(c.org)],
+    ["Legal form", c => fact(c, "Identity", "Legal form")],
+    ["Industry (NACE)", c => fact(c, "Identity", "Industry")],
+    ["Town", c => esc(c.city || "—")],
+    ["Founded", c => fact(c, "Identity", "Founded")],
+    ["Employees (register)", c => fact(c, "Identity", "Employees")],
+    ["Accounts period", c => c.period ? `${esc(c.period)}<span class="src small">${srcLink(c.finSrc, "annual accounts")}</span>` : chip("not_available")],
+    ["Revenue", c => c.rev !== null && c.rev !== undefined ? esc(money(c.rev)) : '<span class="muted">not reported</span>'],
+    ["Operating result", c => c.op !== null && c.op !== undefined ? esc(money(c.op)) : '<span class="muted">not reported</span>'],
+    ["Net result", c => c.res !== null && c.res !== undefined ? esc(money(c.res)) : '<span class="muted">not reported</span>'],
+    ["Equity", c => c.eq !== null && c.eq !== undefined ? esc(money(c.eq)) : '<span class="muted">not reported</span>'],
+    ["Total assets", c => c.assets !== null && c.assets !== undefined ? esc(money(c.assets)) : '<span class="muted">not reported</span>'],
+    ["Managing director", c => c.dagl ? esc(c.dagl) : '<span class="muted">none registered</span>'],
+    ["Chair of the board", c => c.chair ? esc(c.chair) : '<span class="muted">none registered</span>'],
+    ["Registered workplaces", c => c.subunits === null || c.subunits === undefined ? chip("failed") : esc(c.subunits)],
+    ["Official website", c => fact(c, "Digital", "Official website")],
+    ["Social profiles", c => c.socials ? esc(c.socials) : chip(c.avail.social_profiles || "not_available")],
+    ["Job ads", c => c.jobs ? esc(c.jobs) : chip(c.avail.job_postings || "not_available")],
+    ["News posts", c => c.news ? esc(c.news) : chip(c.avail.news_posts || "not_available")],
+    ["Unknown information types", c => esc((c.syn.unknowns || []).length)],
+    ["What changed", c => esc((c.syn.changed || {}).text || "")],
+  ];
+  main.innerHTML = `
+  <section class="panel" aria-labelledby="cmp-h">
+    <h1 id="cmp-h">Compare two companies</h1>
+    <div class="cmp-pick">
+      <div><label class="small muted" for="ca"><strong>Company A</strong></label><input id="ca" type="text" list="all" autocomplete="off" placeholder="Type a name or org. no." value="${A ? esc(`${A.name} · ${A.org}`) : ""}"></div>
+      <div><label class="small muted" for="cb"><strong>Company B</strong></label><input id="cb" type="text" list="all" autocomplete="off" placeholder="Type a name or org. no." value="${B ? esc(`${B.name} · ${B.org}`) : ""}"></div>
+    </div>
+    <datalist id="all">${opts}</datalist>
+  </section>
+  ${A || B ? `<section class="panel" aria-label="Comparison"><table class="cmp"><thead><tr><th scope="col">Field</th><th scope="col">${A ? `<a href="#/c/${A.org}">${esc(A.name)}</a>` : "A"}</th><th scope="col">${B ? `<a href="#/c/${B.org}">${esc(B.name)}</a>` : "B"}</th></tr></thead><tbody>
+    <tr class="names"><td>Company</td><td>${A ? `<a href="#/c/${A.org}">${esc(A.name)}</a>` : "—"}</td><td>${B ? `<a href="#/c/${B.org}">${esc(B.name)}</a>` : "—"}</td></tr>
+    ${rows.map(([l, fn]) => `<tr><td>${esc(l)}</td><td>${cell(A, fn)}</td><td>${cell(B, fn)}</td></tr>`).join("")}
+  </tbody></table><p class="muted small">Values come from each company's profile; open a company to see every source.</p></section>` : `<div class="panel empty">Pick two companies above, or use “Compare” on the company list.</div>`}`;
+  const pick = (input, idx) => input.addEventListener("change", () => {
+    const m = digits(input.value).slice(-9);
+    const org = BY[m] ? m : (C.find(c => norm(c.name) === norm(input.value)) || {}).org;
+    if (!org) return;
+    const cur = [a || "-", b || "-"]; cur[idx] = org;
+    state.pick = cur.filter(x => x !== "-");
+    location.hash = `#/compare/${cur.join("/")}`;
+  });
+  pick(document.getElementById("ca"), 0); pick(document.getElementById("cb"), 1);
+}
+
+function renderAbout() {
+  setNav("about");
+  main.innerHTML = `<section class="panel"><h1>How to verify a fact</h1>
+  <ol><li>Open a company. Each fact row shows its <strong>value</strong>, its <strong>status</strong> and the <strong>source</strong> it was read from, with the retrieval time.</li>
+  <li>The summary is built only from those facts. Each sentence has citation buttons (S1, S2…) that jump to the source list, with the exact URL, retrieval time, content hash and the quoted text span where one exists.</li>
+  <li>Statuses: ${["available", "not_available", "not_applicable", "ambiguous", "blocked", "failed"].map(chip).join(" ")}. “Not available” means the source was checked and has nothing; “not applicable” means the check needs something that is missing (for example, there is no verified website to read company signals from); “ambiguous” means a candidate was found but could not be tied to this exact organisation number, so it is not published.</li>
+  <li>Missing financial values are shown as “not reported”, never as zero.</li>
+  <li>“What changed” compares this run with the previous snapshot of the same company when one was supplied.</li></ol>
+  <p class="muted small">Data files: ${DATA.generated_from.map(g => `${esc(g.dataset)} (${esc(g.path)})`).join(", ")}.</p></section>`;
+}
+
+function route() {
+  const h = location.hash.replace(/^#\/?/, "").split("/");
+  if (h[0] === "c" && h[1]) renderCompany(h[1]);
+  else if (h[0] === "compare") renderCompare(h[1] && h[1] !== "-" ? h[1] : null, h[2] && h[2] !== "-" ? h[2] : null);
+  else if (h[0] === "about") renderAbout();
+  else renderList();
+  drawTray();
+}
+window.addEventListener("hashchange", route);
+route();
+})();
+</script>
+</body>
+</html>

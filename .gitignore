@@ -1,0 +1,12 @@
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+brreg-enheter.csv
+signalpost-universe.jsonl.gz
+out/*
+!out/smoke4-envelopes.jsonl
+!out/smoke4-report.json
+!out/ops2-report.json
+site/data.json

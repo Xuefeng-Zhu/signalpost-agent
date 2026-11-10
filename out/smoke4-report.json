@@ -1,0 +1,145 @@
+{
+  "run_id": "smoke-004",
+  "started_at": "2026-11-10T18:39:42.691043Z",
+  "completed_at": "2026-11-10T18:41:24.493086Z",
+  "expected_count": 100,
+  "emitted_envelopes": 100,
+  "resumed_profiles": 0,
+  "profiles_fetched_this_run": 100,
+  "modules": [
+    "registry",
+    "accounting_obligation",
+    "registry_live",
+    "financials",
+    "roles",
+    "group",
+    "locations",
+    "website",
+    "site_signals",
+    "nav_jobs"
+  ],
+  "registry": {
+    "registry_snapshot_sha256": "1a4a807310926763dc77dcfcd2507c312343ddfa01a83eea86ecdb6ce56e6ded",
+    "registry_rows_scanned": 1176178,
+    "requested": 100,
+    "selected": 100
+  },
+  "operations": {
+    "requests": 998,
+    "bytes": 36224075,
+    "dns_lookups": 708,
+    "website_requests": 422,
+    "site_signals_requests": 33,
+    "nav_detail_requests": 43,
+    "p50_ms": 792,
+    "runtime_s": 83.0,
+    "wall_s_including_bulk_scan_and_nav_sync": 102.0,
+    "third_party_cost_usd": 0,
+    "nav_feed_sync": {
+      "status": "synced",
+      "error": null,
+      "token_source": "nav_published_public_token",
+      "window_days": 183,
+      "headers": 87707,
+      "active_ads": 9627,
+      "pages": 2,
+      "requests": 46,
+      "bytes": 290448,
+      "sync_seconds": 6.2,
+      "synced_at": "2026-11-10T18:39:47.110432Z",
+      "sync_requests": 3
+    },
+    "requests_including_shared_nav_sync": 1001,
+    "p95_ms": 1873
+  },
+  "validation": {
+    "passed": true,
+    "checks": {
+      "exact_expected_count": true,
+      "unique_organisation_numbers": true,
+      "all_entity_states_terminal": true,
+      "all_module_states_terminal": true,
+      "zero_silent_drops": true,
+      "synthesis_present_and_every_statement_supported": true
+    },
+    "invalid_states": []
+  },
+  "website_summary": {
+    "published_official_websites": 8,
+    "website_states": {
+      "available": 8,
+      "not_found": 87,
+      "ambiguous": 3,
+      "blocked": 2
+    },
+    "published_by_lead_source": {
+      "brreg_email_domain": 1,
+      "brreg_hjemmeside": 2,
+      "legal_name_domain_guess": 5
+    },
+    "published_by_identity_method": {
+      "legal_name_and_registered_address": 2,
+      "deterministic_name_org_evidence_v3": 2,
+      "organisation_number": 4
+    }
+  },
+  "signal_summary": {
+    "site_signals": {
+      "states": {
+        "blocked": 1,
+        "not_applicable": 92,
+        "available": 7
+      },
+      "companies_with": {
+        "phones": 3,
+        "business_description": 7,
+        "news_posts": 4,
+        "dated_news_posts": 4,
+        "emails": 3,
+        "social_profiles": 3
+      },
+      "facts": {
+        "phones": 3,
+        "business_description": 7,
+        "news_posts": 29,
+        "dated_news_posts": 29,
+        "emails": 4,
+        "social_profiles": 7
+      }
+    },
+    "nav_jobs": {
+      "states": {
+        "not_found": 100
+      },
+      "companies_with_postings": 0,
+      "postings": 0,
+      "candidates_rejected_by_orgnr_gate": 40
+    },
+    "companies_with_any_job_posting": 0
+  },
+  "refresh_and_synthesis": {
+    "previous_snapshot": {
+      "path": "out/smoke3-profiles.jsonl",
+      "sha256": "a7015276ff5dffa4ad11e0a92c8b9209479d1a9c54d74f9ce6c92603bf4793df"
+    },
+    "companies_compared": 100,
+    "companies_with_changes": 0,
+    "changes": 0,
+    "fields_changed": {},
+    "non_material_refresh_failures": 0,
+    "synthesis": {
+      "method": "evidence_template_synthesis_v1",
+      "statements_published": 1152,
+      "statements_dropped_by_support_check": 0,
+      "min_statements_per_company": 10,
+      "companies_with_unknowns": 100,
+      "llm_polish": {
+        "configured": false,
+        "accepted": 0,
+        "rejected": 0,
+        "failed": 0
+      },
+      "runtime_ms": 91
+    }
+  }
+}
