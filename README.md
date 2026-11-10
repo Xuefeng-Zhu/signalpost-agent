@@ -100,6 +100,12 @@ Details and measurements: `notes/site-signals.md`.
 ## Evaluator command (one command)
 
 ```bash
+./run_signalpost.sh companies.jsonl out/run [previous-profiles.jsonl]
+```
+
+Writes `out/run/envelopes.jsonl` (one terminal envelope per input), `profiles.jsonl`, `report.json` and the review site in `out/run/site/`. It runs `uv sync --frozen` and downloads the Brreg bulk CSV if `brreg-enheter.csv` is missing. Equivalent explicit form:
+
+```bash
 uv sync
 uv run python scripts/run_competition_batch.py \
   --organisations smoke-companies.jsonl \
