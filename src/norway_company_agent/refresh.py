@@ -46,11 +46,31 @@ def _read(value: Any, path: tuple[str, ...]) -> Any:
 
 
 def _evidence_for(profile: dict[str, Any], field: str) -> dict[str, Any]:
-    module = field.split(".", 1)[0]
-    records = profile.get("evidence", {})
+    return _observation(profile, field)[1]
+
+
+def _observation(profile: dict[str, Any], field: str) -> tuple[Any, dict, str]:
+    """Read the value and its actual provenance together, preferring current registry data.
+
+    An attempted live read must never silently fall back to a frozen bulk value: that would
+    turn a temporary API failure into an apparent reversal of the previous live observation.
+    Legacy profiles without a live module still compare their bulk-derived fields.
+    """
+    module, key = field.split(".", 1)
+    records = profile.get("evidence") or {}
     if module == "registry":
-        return records.get("registry_live") or records.get("registry", {})
-    return records.get(module, {})
+        live = records.get("registry_live")
+        if isinstance(live, dict):
+            value = live.get("value")
+            if live.get("status") != "available" or not isinstance(value, dict):
+                return None, live, "registry_live"
+            if key == "municipality" and "business_address" in value:
+                return _read(value, ("business_address", "kommune")), live, "registry_live"
+            if key in value:
+                return value[key], live, "registry_live"
+        return _read(profile, TRACKED_FIELDS[field]), records.get("registry") or {}, "registry"
+    value = PROJECTED_FIELDS[field](profile) if field in PROJECTED_FIELDS else _read(profile, TRACKED_FIELDS[field])
+    return value, records.get(module) or {}, module
 
 
 def diff_profile(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
@@ -59,16 +79,11 @@ def diff_profile(previous: dict[str, Any], current: dict[str, Any]) -> list[dict
     if not old_org or old_org != new_org:
         raise ValueError("Refresh comparison requires the same exact organisation number")
     changes = []
-    readers = [(field, (lambda doc, path=path: _read(doc, path))) for field, path in TRACKED_FIELDS.items()] + list(PROJECTED_FIELDS.items())
-    for field, reader in readers:
-        old_value = reader(previous)
-        new_value = reader(current)
+    for field in [*TRACKED_FIELDS, *PROJECTED_FIELDS]:
+        old_value, previous_record, old_module = _observation(previous, field)
+        new_value, record, new_module = _observation(current, field)
         if old_value == new_value or (old_value in (None, "", []) and new_value in (None, "", [])):
             continue
-        if field in PROJECTED_FIELDS and (old_value is None or new_value is None):
-            continue  # module absent on one side (not run / not applicable): not a material change
-        record = _evidence_for(current, field)
-        previous_record = _evidence_for(previous, field)
         changes.append({
             "organisation_number": new_org,
             "field": field,
@@ -81,8 +96,11 @@ def diff_profile(previous: dict[str, Any], current: dict[str, Any]) -> list[dict
             "old_content_sha256": previous_record.get("content_sha256"),
             "new_content_sha256": record.get("content_sha256"),
             "status": record.get("status"),
+            "source_module": new_module,
+            "previous_source_module": old_module,
         })
-    return changes
+    # All callers, including replay tools, receive safe classifications, not just batch callers.
+    return classify_refresh_failures(previous, current, changes)
 
 
 def diff_datasets(previous: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -101,7 +119,7 @@ UNREACHABLE_OUTCOMES = {"unreachable", "blocked_robots", "timeout", "source_erro
 
 
 def classify_refresh_failures(previous: dict[str, Any], current: dict[str, Any], changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Mark website changes caused by the previously verified site being unreachable this run.
+    """Separate evidence availability from confirmed company changes for every module.
 
     A failed re-check is not a material change: the change stays in the output (with ``material: false`` and
     ``change_type: source_unreachable``) so nothing is hidden, but it is not counted or told as a change, and the
@@ -119,10 +137,40 @@ def classify_refresh_failures(previous: dict[str, Any], current: dict[str, Any],
         if _read(current, ("evidence", "website", "status")) in ("source_error", "blocked"):
             unreachable = True
     for change in changes:
+        field = change["field"]
+        record = _evidence_for(current, field)
+        previous_record = _evidence_for(previous, field)
+        old_value, new_value = change.get("old_value"), change.get("new_value")
+
+        def observed(source: dict, value: Any) -> bool:
+            # A successful empty collection is evidence of zero results. HTTP 404 or missing
+            # data alone is not evidence that every director/workplace/filing was removed.
+            detail = source.get("value") or {}
+            if isinstance(detail, dict):
+                if detail.get("collection_complete") is False or detail.get("errors"):
+                    return False
+                if field.startswith("nav_jobs."):
+                    if detail.get("candidates_total", 0) > detail.get("candidates_checked", 0):
+                        return False
+                    if any("detail fetch failed" in str(r.get("reason")) for r in detail.get("rejected_candidates", []) if isinstance(r, dict)):
+                        return False
+            return source.get("status") == "available" or (
+                source.get("status") == "not_found" and isinstance(value, list)
+            ) or (not source and field.startswith("registry."))
+
         if unreachable and (change["field"].startswith("website.") or change["field"].startswith("site_signals.")):
             change["material"] = False
             change["change_type"] = "source_unreachable"
             change["previous_verified_value"] = old_site
+        elif field.startswith("registry.") and change.get("source_module") != change.get("previous_source_module"):
+            change["material"] = False
+            change["change_type"] = "source_changed"
+        elif not observed(record, new_value) or (new_value is None and old_value is not None):
+            change["material"] = False
+            change["change_type"] = "source_unreachable" if record.get("status") in UNREACHABLE_OUTCOMES | {"blocked", "failed", "blocked_policy"} else "source_unavailable"
+        elif not observed(previous_record, old_value):
+            change["material"] = False
+            change["change_type"] = "previous_source_unavailable"
         else:
             change.setdefault("material", True)
             change.setdefault("change_type", "added" if change.get("old_value") in (None, "", []) else "removed" if change.get("new_value") in (None, "", []) else "updated")

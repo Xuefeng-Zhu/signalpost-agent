@@ -514,7 +514,7 @@ def _digital(b: _Builder) -> None:
 
 
 CHANGE_LABELS = {
-    "registry.name": "Legal name", "registry.legal_form": "Legal form", "registry.employees": "Employee count (bulk register)",
+    "registry.name": "Legal name", "registry.legal_form": "Legal form", "registry.employees": "Employee count (register)",
     "registry.municipality": "Municipality",
     "registry.website": "Registered website", "registry.latest_submitted_accounts": "Latest submitted accounts year",
     "financials.records": "Annual accounts", "financial_history.years": "Annual-account copies",
@@ -558,18 +558,33 @@ def _changes(b: _Builder, refresh: dict | None, changes: list[dict] | None) -> d
     if not refresh.get("company_in_previous_snapshot"):
         return {"status": "not_in_previous_snapshot", "text": "This company was not in the previous snapshot, so this run is its first observation.", "count": 0, "previous": refresh.get("previous")}
     failed = [c for c in changes or [] if c.get("material") is False]
-    if failed:
-        index = (changes or []).index(failed[0])
-        web = _ev(b.profile, "website")
-        sid = b.source("Website re-check in this run", pointer("evidence", "website"), web)
-        b.say("what_changed", f"The previously verified website {failed[0].get('previous_verified_value')} could not be reached in this run, so it is not re-published; this is a failed re-check, not a confirmed change.",
-              [sid], [(pointer("changes", index, "previous_verified_value"), failed[0].get("previous_verified_value")), (pointer("changes", index, "change_type"), "source_unreachable")])
+    described_failures = set()
+    for change in failed:
+        index = (changes or []).index(change)
+        module = change.get("source_module") or change["field"].split(".", 1)[0]
+        if module in described_failures:
+            continue
+        described_failures.add(module)
+        record = _ev(b.profile, module)
+        sid = b.source(f"{module} comparison availability", pointer("evidence", module), record)
+        facts = [(pointer("changes", index, "change_type"), change.get("change_type"))]
+        if change.get("previous_verified_value"):
+            text = f"The previously verified website {change['previous_verified_value']} could not be reached in this run, so it is not re-published; this is a failed re-check, not a confirmed change."
+            facts.append((pointer("changes", index, "previous_verified_value"), change["previous_verified_value"]))
+        elif change.get("change_type") == "previous_source_unavailable":
+            text = f"The previous {module} source observation was unavailable, so this result is not reported as a confirmed company change."
+        elif change.get("change_type") == "source_changed":
+            text = "The registry observations came from different sources, so their differences are not reported as confirmed company changes."
+        else:
+            text = f"The {module} source could not be fully verified in this run; missing information is not a confirmed company change."
+        b.say("what_changed", text, [sid], facts)
     for change in changes or []:
         if change.get("material") is False:
             continue
         module = change["field"].split(".", 1)[0]
-        record = _ev(b.profile, "registry_live" if module == "registry" else module) or {"source_url": change.get("source_url"), "retrieved_at": change.get("retrieved_at"), "content_sha256": change.get("new_content_sha256")}
-        sid = b.source(f"Current {module} evidence (compared with previous snapshot)", pointer("evidence", "registry_live" if module == "registry" else module), record)
+        source_module = change.get("source_module") or ("registry_live" if module == "registry" and _ev(b.profile, "registry_live") else module)
+        record = _ev(b.profile, source_module)
+        sid = b.source(f"Current {module} evidence (compared with previous snapshot)", pointer("evidence", source_module), record)
         index = (changes or []).index(change)
         base = pointer("changes", index)
         derived = None
@@ -582,7 +597,7 @@ def _changes(b: _Builder, refresh: dict | None, changes: list[dict] | None) -> d
     count = len([c for c in changes or [] if c.get("material", True)])
     text = f"{count} material change{'s' if count != 1 else ''} since the previous snapshot." if count else "No material changes since the previous snapshot in the tracked fields."
     if failed:
-        text += " One source could not be re-checked this run (see below)."
+        text = (text if count else "No material changes were confirmed in the comparable tracked fields.") + " Some source observations were unavailable; the comparison is incomplete (see below)."
     return {"status": "compared", "count": count, "refresh_failures": len(failed), "previous": refresh.get("previous"), "text": text}
 
 
