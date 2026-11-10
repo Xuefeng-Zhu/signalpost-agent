@@ -30,6 +30,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 import tldextract
 
+from . import js_render
 from .evidence import utc_now
 from .website import USER_AGENT, SafeRedirectHandler, assert_public_url
 
@@ -76,7 +77,7 @@ IDENTITY_LINK_TERMS = (
     "kontakt", "contact", "om-oss", "om_oss", "om oss", "about", "personvern", "privacy", "cookie", "vilkar",
     "vilkår", "terms", "betingelser", "salgsbetingelser", "impressum", "firma", "selskapet", "informasjon",
 )
-FALLBACK_PATHS = ("/kontakt", "/om-oss", "/personvern")
+FALLBACK_PATHS = ("/kontakt", "/om-oss", "/kontakt-oss", "/personvern", "/om")
 
 DIGIT_RUN = re.compile(r"\d+(?:[ .\u00a0\u202f-]\d+)*")
 
@@ -328,6 +329,44 @@ def guess_domains(name: str, *, limit: int = 8) -> list[str]:
     return ordered[:limit]
 
 
+# Trade words that, standing alone, are nobody's domain ("bygg.no"). Used only to filter the
+# extended prefix/suffix guesses below; identity is still proven on the site itself.
+GENERIC_LABELS = DROPPABLE_DESCRIPTORS | {
+    "restaurant", "bar", "cafe", "kafe", "drift", "bygg", "byggefirma", "entreprenor", "entreprenoer", "maskin",
+    "transport", "handel", "auto", "bil", "bilsenter", "bilsenteret", "service", "regnskap", "eiendomsmegler",
+    "barnehage", "skole", "rorleggerfirma", "roerleggerfirma", "rorlegger", "elektro", "maler", "malermester",
+    "tannlege", "tannlegene", "frisor", "frisoer", "maritime", "rederi", "shipping", "consult", "partner",
+    "partners", "advokat", "advokatfirma", "advisors", "management", "solutions", "systems", "technology",
+    "tech", "media", "design", "studio", "trading", "import", "export", "norsk", "norske", "nord", "sor", "ost",
+    "vest", "mur", "flis", "blikk", "ventilasjon", "gulv", "tak", "vvs", "catering", "eventer", "infra",
+    "anlegg", "betong", "trafikkskole", "trafikkskule", "senter", "sentrum", "hotell", "pub", "sushi", "pizza",
+}
+
+
+def extended_guess_domains(name: str, *, exclude: set[str] | None = None, limit: int = 6) -> list[str]:
+    """Brand-shaped guesses: leading/trailing token runs of the legal name ("jeistad" for JEISTAD
+    ENTREPRENØR AS, "sigurdlima" for RØRLEGGERFIRMA SIGURD LIMA AS). Leads only."""
+    exclude = set(exclude or ())
+    ordered: list[str] = []
+    for mapping in _FOLD_VARIANTS:
+        tokens = [t for t in _name_tokens(name, mapping) if t != "og"]
+        if len(tokens) < 2:
+            continue
+        runs = [tokens[:k] for k in range(len(tokens) - 1, 0, -1)] + [tokens[-k:] for k in range(len(tokens) - 1, 0, -1)]
+        for run in runs:
+            if all(t in GENERIC_LABELS or t.isdigit() for t in run):
+                continue
+            label = "".join(run)
+            if len(run) == 1 and (len(label) < 4 or label in GENERIC_LABELS):
+                continue
+            if len(label) < 3:
+                continue
+            domain = f"{label}.no"
+            if domain not in ordered and domain not in exclude:
+                ordered.append(domain)
+    return ordered[:limit]
+
+
 def email_domain(email: Any) -> str | None:
     value = str(email or "").strip().casefold()
     if "@" not in value:
@@ -345,7 +384,35 @@ def _blocked_host(host: str) -> bool:
     return any(host == blocked or host.endswith("." + blocked) for blocked in BLOCKED_SITE_HOSTS)
 
 
-def build_candidates(profile: dict[str, Any], *, exclude_domains: set[str] | None = None, limit: int = 9) -> list[dict[str, Any]]:
+def _domain_of(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "@" in text and "://" not in text:
+        return email_domain(text)
+    parsed = urllib.parse.urlparse(text if "://" in text else "https://" + text)
+    return tldextract.extract(parsed.hostname or "").top_domain_under_public_suffix or None
+
+
+def external_leads(profile: dict[str, Any]) -> list[tuple[str, str]]:
+    """Website leads tied to this organisation number by an official/declared source:
+    Nav job ads whose ``employer.orgnr`` is exact (declared employer homepage) and Brreg
+    sub-units' own ``hjemmeside``/``epostadresse``. Leads only; the site must still prove identity."""
+    leads: list[tuple[str, str]] = []
+    jobs = ((profile.get("evidence", {}).get("nav_jobs") or {}).get("value") or {}).get("postings") or []
+    for posting in jobs:
+        domain = _domain_of(posting.get("employer_homepage"))
+        if domain:
+            leads.append((domain, "nav_employer_homepage"))
+    web_leads = ((profile.get("evidence", {}).get("locations") or {}).get("value") or {}).get("web_leads") or []
+    for lead in web_leads:
+        domain = _domain_of(lead.get("value"))
+        if domain:
+            leads.append((domain, "brreg_subunit_" + ("email_domain" if lead.get("kind") == "subunit_email" else "hjemmeside")))
+    return leads
+
+
+def build_candidates(profile: dict[str, Any], *, exclude_domains: set[str] | None = None, limit: int = 16) -> list[dict[str, Any]]:
     raw = (profile.get("evidence", {}).get("registry") or {}).get("value") or {}
     exclude = {d.casefold() for d in (exclude_domains or set())}
     candidates: list[dict[str, Any]] = []
@@ -361,14 +428,25 @@ def build_candidates(profile: dict[str, Any], *, exclude_domains: set[str] | Non
         candidates.append({"domain": domain, "lead_source": source})
 
     live = (profile.get("evidence", {}).get("registry_live") or {}).get("value") or {}
-    add(email_domain(raw.get("epostadresse")), "brreg_email_domain")
-    add(email_domain(live.get("email")), "brreg_email_domain")
+    email_domains = [d for d in (email_domain(raw.get("epostadresse")), email_domain(live.get("email"))) if d]
+    for domain in email_domains:
+        add(domain, "brreg_email_domain")
     live_site = live.get("website")
     if live_site and live_site != profile.get("website"):
         parsed = urllib.parse.urlparse(live_site if "://" in live_site else "https://" + live_site)
         add(tldextract.extract(parsed.hostname or "").top_domain_under_public_suffix or None, "brreg_live_hjemmeside")
-    for domain in guess_domains(str(profile.get("name") or "")):
+    for domain, source in external_leads(profile):
+        add(domain, source)
+    for domain in email_domains:
+        # firma.com mail with a firma.no site (and the reverse) is common for Norwegian SMEs.
+        label, _, tld = domain.rpartition(".")
+        if label and "." not in label and tld in {"no", "com"}:
+            add(f"{label}.{'com' if tld == 'no' else 'no'}", "brreg_email_domain_variant")
+    guesses = guess_domains(str(profile.get("name") or ""))
+    for domain in guesses:
         add(domain, "legal_name_domain_guess")
+    for domain in extended_guess_domains(str(profile.get("name") or ""), exclude=set(guesses)):
+        add(domain, "legal_name_brand_guess")
     return candidates[:limit]
 
 
@@ -474,7 +552,9 @@ def _registered_domain(url: str) -> str:
 
 def _page_record(result: dict[str, Any], hints: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     parsed = page_identity_signals(result["raw"], hints)
+    extra = {"rendered": True, "render_method": "headless_chromium_v1"} if result.get("rendered") else {}
     return {
+        **extra,
         "url": result["final_url"],
         "requested_url": result["requested_url"],
         "redirect_chain": result.get("redirect_chain"),
@@ -505,7 +585,8 @@ def _identity_links(base_url: str, links: list[tuple[str, str]], limit: int) -> 
 
 
 def probe_site(domain: str, hints: dict[str, Any], budget: _Budget, *, timeout: float = 6.0, max_bytes: int = 4_000_000,
-               max_subpages: int = 3, require_name_for_subpages: bool = True, robots_cache: dict | None = None) -> dict[str, Any]:
+               max_subpages: int = 4, require_name_for_subpages: bool = True, robots_cache: dict | None = None,
+               render_js: bool = True) -> dict[str, Any]:
     """Fetch a candidate homepage plus a few identity pages and assess the exact-entity proof."""
     robots_cache = {} if robots_cache is None else robots_cache
     outcome: dict[str, Any] = {"domain": domain, "pages": [], "errors": []}
@@ -549,14 +630,20 @@ def probe_site(domain: str, hints: dict[str, Any], budget: _Budget, *, timeout: 
         outcome["status"] = "parked"
         outcome["proof"] = assess_org_proof(outcome["pages"])
         return outcome
+    promising = False
     if not signals.get("target_org_number_found"):
         name_words = set(hints.get("legal_name_words") or []) - LEGAL_SUFFIXES - DROPPABLE_DESCRIPTORS
         home_words = set(_words(signals.get("title"))) | set(_words(final_host))
-        promising = signals.get("legal_name_present") or bool(name_words & home_words) or not require_name_for_subpages
+        host_label = re.sub(r"[^a-z0-9]", "", tldextract.extract(final_host).domain or "")
+        # "asvomaloy.no" for ASVO MÅLØY: name words inside the joined host label also make it worth a look.
+        host_hit = bool(host_label) and any(len(word) >= 3 and word in host_label for word in name_words)
+        promising = bool(signals.get("legal_name_present") or (name_words & home_words) or host_hit or not require_name_for_subpages)
         sub_urls = _identity_links(final_url, links, max_subpages) if promising else []
-        if promising and not sub_urls:
+        if promising and len(sub_urls) < max_subpages:
             root = f"{urllib.parse.urlparse(final_url).scheme}://{final_host}"
-            sub_urls = [root + path for path in FALLBACK_PATHS[:2]]
+            linked_paths = {urllib.parse.urlparse(url).path.rstrip("/").casefold() for url in sub_urls}
+            pad = [root + path for path in FALLBACK_PATHS if path not in linked_paths]
+            sub_urls = sub_urls + pad[: (max_subpages - len(sub_urls)) if sub_urls else 3]
         parser = robots_cache.get(f"{urllib.parse.urlparse(final_url).scheme}://{final_host}")
         for sub_url in sub_urls:
             if not _allowed(parser, sub_url):
@@ -575,8 +662,54 @@ def probe_site(domain: str, hints: dict[str, Any], budget: _Budget, *, timeout: 
             if page["identity_signals"].get("target_org_number_found"):
                 break
     outcome["proof"] = assess_org_proof(outcome["pages"])
+    if (render_js and promising and outcome["proof"]["status"] in {"absent", "name_only"}
+            and js_render.looks_like_js_shell(home.get("raw") or b"", int(signals.get("text_length") or 0))):
+        parser = robots_cache.get(f"{urllib.parse.urlparse(final_url).scheme}://{final_host}")
+        _render_identity_pages(outcome, final_url, hints, budget, parser)
+        outcome["proof"] = assess_org_proof(outcome["pages"])
     outcome["status"] = {"exact": "verified", "conflict": "ambiguous"}.get(outcome["proof"]["status"], "unverified")
     return outcome
+
+
+def _render_identity_pages(outcome: dict[str, Any], final_url: str, hints: dict[str, Any], budget: _Budget, parser: Any, *, max_pages: int = 2) -> None:
+    """Bounded headless-Chromium pass for JS-only shells: the homepage, then one identity page found
+    in the rendered DOM. Same-site only, robots-checked, counted against the request budget."""
+    if not js_render.available() or time.monotonic() > budget.deadline - 12:
+        return
+    domain = outcome.get("final_domain") or _registered_domain(final_url)
+    queue = [final_url]
+    rendered_urls: set[str] = set()
+    while queue and len(rendered_urls) < max_pages:
+        url = queue.pop(0)
+        if url in rendered_urls or not _allowed(parser, url):
+            continue
+        try:
+            budget.take()
+        except _BudgetExhausted:
+            outcome["errors"].append("per-company request budget exhausted before JS render")
+            return
+        rendered_urls.add(url)
+        result = js_render.render(url, timeout_s=min(15.0, max(5.0, budget.deadline - time.monotonic() - 2)))
+        if not result:
+            outcome["errors"].append(f"JS render failed for {url}")
+            continue
+        try:
+            assert_public_url(result["final_url"])
+        except ValueError:
+            continue
+        if _registered_domain(result["final_url"]) != domain:
+            continue
+        raw = result["html"].encode("utf-8", errors="replace")
+        budget.bytes += len(raw)
+        budget.latencies_ms.append(result["elapsed_ms"])
+        page, _ = _page_record({"raw": raw, "final_url": result["final_url"], "requested_url": url, "status": 200,
+                                "redirect_chain": [url], "retrieved_at": utc_now(), "rendered": True}, hints)
+        outcome["pages"].append(page)
+        outcome.setdefault("rendered_pages", []).append(result["final_url"])
+        if page["identity_signals"].get("target_org_number_found"):
+            return
+        if url == final_url:
+            queue.extend(_identity_links(result["final_url"], result["links"], 1))
 
 
 def _summarize(outcome: dict[str, Any], lead_source: str) -> dict[str, Any]:
@@ -592,12 +725,16 @@ def _summarize(outcome: dict[str, Any], lead_source: str) -> dict[str, Any]:
     }
 
 
-def discover_official_website(profile: dict[str, Any], *, exclude_domains: set[str] | None = None, max_requests: int = 14,
-                              deadline_s: float = 40.0, timeout: float = 5.0, max_candidates: int = 9) -> dict[str, Any]:
+def discover_official_website(profile: dict[str, Any], *, exclude_domains: set[str] | None = None, max_requests: int = 20,
+                              deadline_s: float = 45.0, timeout: float = 5.0, max_candidates: int = 16,
+                              first_candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Return a discovery record: status verified|ambiguous|not_found plus candidates and metrics."""
     hints = identity_hints(profile)
     budget = _Budget(max_requests, deadline_s)
     candidates = build_candidates(profile, exclude_domains=exclude_domains, limit=max_candidates)
+    if first_candidates:
+        known = {c["domain"] for c in first_candidates}
+        candidates = list(first_candidates) + [c for c in candidates if c["domain"] not in known]
     resolution = _resolve_many(
         list(dict.fromkeys(itertools.chain.from_iterable((c["domain"], "www." + c["domain"]) for c in candidates))), timeout=4.0,
     )
@@ -613,10 +750,18 @@ def discover_official_website(profile: dict[str, Any], *, exclude_domains: set[s
             continue
         try:
             outcome = probe_site(domain, hints, budget, timeout=timeout, robots_cache=robots_cache,
-                                 require_name_for_subpages=candidate["lead_source"] == "legal_name_domain_guess")
+                                 require_name_for_subpages=candidate["lead_source"].startswith("legal_name"))
         except _BudgetExhausted:
             assessed.append({"domain": domain, "lead_source": candidate["lead_source"], "outcome": "budget_exhausted"})
             break
+        if (outcome.get("status") == "verified" and candidate["lead_source"] == "legal_name_brand_guess"
+                and (outcome.get("proof") or {}).get("where") != "homepage"):
+            # A domain built from only part of the legal name ("insbo.no" for INSBO SIRNES FARGE & INTERIØR AS)
+            # is often a chain/franchise site that lists this entity on a store page. Only a homepage
+            # identity statement makes it the entity's own site.
+            outcome = {**outcome, "status": "ambiguous", "proof": {**outcome["proof"], "status": "conflict", "publishable": False,
+                       "evidence_against": list(outcome["proof"].get("evidence_against") or []) + [
+                           "brand-shaped domain covers only part of the legal name and the proof is on a subpage (possible chain/franchise site)"]}}
         assessed.append(_summarize(outcome, candidate["lead_source"]))
         if outcome.get("status") == "verified":
             verified = {**outcome, "lead_source": candidate["lead_source"]}
@@ -671,7 +816,7 @@ def _official_claim(record: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def resolve_official_website(profile: dict[str, Any], *, discovery: bool = True, max_requests: int = 14) -> tuple[dict[str, Any], dict[str, Any]]:
+def resolve_official_website(profile: dict[str, Any], *, discovery: bool = True, max_requests: int = 20) -> tuple[dict[str, Any], dict[str, Any]]:
     from .identity import apply_website_identity_gate
     from .website import fetch_website
 
@@ -685,12 +830,19 @@ def resolve_official_website(profile: dict[str, Any], *, discovery: bool = True,
         return record, metrics
 
     exclude: set[str] = set()
+    first: list[dict[str, Any]] = []
     registry_value = record.get("value") or {}
+    registry_js_shell = record.get("status") == "ambiguous" and registry_value.get("extraction_state") == "js_fallback_candidate"
     for url in (record.get("source_url"), registry_value.get("final_url")):
         if url and record.get("status") == "ambiguous":
-            # Already fetched and assessed by the registry step; do not probe it twice.
-            exclude.add(_registered_domain(url))
-    found = discover_official_website(profile, exclude_domains={d for d in exclude if d}, max_requests=max_requests)
+            # Already fetched and assessed by the registry step; do not probe it twice
+            # unless it is a JS-only shell, which discovery may render once.
+            domain = _registered_domain(url)
+            if registry_js_shell and js_render.enabled() and domain and not any(c["domain"] == domain for c in first):
+                first.append({"domain": domain, "lead_source": "brreg_hjemmeside_rendered"})
+            else:
+                exclude.add(domain)
+    found = discover_official_website(profile, exclude_domains={d for d in exclude if d}, max_requests=max_requests, first_candidates=first)
     _merge_metrics(metrics, found["metrics"])
     summary = {
         "status": found["status"],
@@ -726,7 +878,7 @@ def resolve_official_website(profile: dict[str, Any], *, discovery: bool = True,
             }
         value = site_record.setdefault("value", {})
         known = {page.get("url") for page in value.get("pages", [])}
-        value.setdefault("pages", []).extend(page for page in selected["pages"] if page.get("url") not in known)
+        value.setdefault("pages", []).extend(page for page in selected["pages"] if page.get("url") not in known or page.get("rendered"))
         if not value["pages"] or not value["pages"][0].get("identity_signals"):
             # The homepage proof must lead the page list so the gate reads it as the homepage.
             home = selected["pages"][0]

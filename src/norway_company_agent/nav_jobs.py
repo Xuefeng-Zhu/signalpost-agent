@@ -49,6 +49,11 @@ def normalize_name(value: Any) -> str:
     return " ".join(tokens)
 
 
+def _iso(value: datetime) -> str:
+    """Explicit ISO-8601 UTC formatting (robust even where ``datetime.isoformat`` is patched)."""
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
 def _parse_ts(value: Any) -> datetime | None:
     try:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -170,7 +175,10 @@ class NavJobsFeed:
                     if prior is None or str(record["sistEndret"] or "") >= str(prior.get("sistEndret") or ""):
                         self.headers[uuid] = record
             self.synced_at = utc_now()
-            self._save_cache(now)
+            try:
+                self._save_cache(now)
+            except Exception as exc:  # noqa: BLE001 - a cache write failure must never fail the feed
+                self.cache_error = f"{type(exc).__name__}: {str(exc)[:160]}"
             self.by_name = {}
             self.by_token = {}
             for record in self.headers.values():
@@ -208,21 +216,26 @@ class NavJobsFeed:
     def _save_cache(self, now: datetime) -> None:
         if not self.cache_path:
             return
-        cutoff = (now - timedelta(days=self.window_days)).isoformat()
+        cutoff = now - timedelta(days=self.window_days)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.cache_path.with_suffix(".tmp")
-        with gzip.open(tmp, "wt", encoding="utf-8") as handle:
-            handle.write(json.dumps({"window_days": self.window_days, "synced_until": now.isoformat(), "source": BASE + "/api/v1/feed"}) + "\n")
-            for record in self.headers.values():
-                ts = _parse_ts(record.get("sistEndret"))
-                if record.get("status") == "ACTIVE" or (ts and ts.isoformat() >= cutoff):
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        tmp.replace(self.cache_path)
+        # Unique temp name per process/thread: concurrent runs sharing one cache must not clobber each other.
+        tmp = self.cache_path.with_name(f"{self.cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            with gzip.open(tmp, "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps({"window_days": self.window_days, "synced_until": _iso(now), "source": BASE + "/api/v1/feed"}) + "\n")
+                for record in self.headers.values():
+                    ts = _parse_ts(record.get("sistEndret"))
+                    if record.get("status") == "ACTIVE" or (ts and ts >= cutoff):
+                        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            tmp.replace(self.cache_path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     def summary(self) -> dict[str, Any]:
         return {"status": self.status, "error": self.error, "token_source": self.token_source, "window_days": self.window_days,
                 "headers": len(self.headers), "active_ads": sum(len(v) for v in self.by_name.values()), "pages": self.pages,
-                "requests": self.requests, "bytes": self.bytes, "sync_seconds": getattr(self, "sync_seconds", None), "synced_at": self.synced_at}
+                "requests": self.requests, "bytes": self.bytes, "cache_error": getattr(self, "cache_error", None), "sync_seconds": getattr(self, "sync_seconds", None), "synced_at": self.synced_at}
 
     # -- per company -------------------------------------------------------
     def candidates(self, profile: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], list[str]]:

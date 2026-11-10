@@ -82,3 +82,41 @@ ceiling is low. The operating-company sample shows what to expect on real batche
    carries the employer org number, and what its access terms are.
 3. A licensed search API (Brave, if Builderr supplies the key) as an extra *lead* source for brand
    names that differ from the legal name. Use the same org-number gate, and keep results transient.
+
+## Revision 2: recall levers (identity gate unchanged)
+Code: `website_discovery.py`, `js_render.py` (new), `official.py`, `nav_jobs.py`, `scripts/run_competition_batch.py`.
+Tests: `tests/test_recall_leads.py`.
+
+New **leads** (still only leads; publication needs the same org-number or legal-name + registered-address proof):
+- `nav_employer_homepage`: `employer.homepage` from Nav ads whose `employer.orgnr` is exactly this entity or one of
+  its subunits. `nav_jobs` now runs *before* website discovery in each company task.
+- `brreg_subunit_hjemmeside` / `brreg_subunit_email_domain`: the sub-units' own `hjemmeside`/`epostadresse`
+  (stored as `locations.value.web_leads`, beside the `locations` list so the refresh diff is unchanged).
+- `brreg_email_domain_variant`: `firma.com` mail → also `firma.no` (and the reverse).
+- `legal_name_brand_guess`: leading/trailing token runs of the legal name (`jeistad.no` for JEISTAD ENTREPRENØR AS,
+  `sigurdlima.no` for RØRLEGGERFIRMA SIGURD LIMA AS); bare trade words (`bygg.no`, `restaurant.no`) are never emitted.
+
+Wider **identity pages**: a candidate whose joined host label contains a legal-name word (`asvomaloy.no`) now counts
+as promising, so its contact/about pages are fetched; up to 4 identity subpages, padded with fallback paths
+(`/kontakt`, `/om-oss`, `/kontakt-oss`, `/personvern`, `/om`).
+
+**Headless fallback** (`js_render.py`): when a promising candidate's static homepage is a JS shell (little text +
+scripts / SPA markers) and has no proof, the homepage and one identity page from the rendered DOM are rendered in
+headless Chromium (images/fonts/media and private/loopback hosts blocked, robots.txt checked, same registered
+domain only, counts against the request cap, max 3 concurrent browsers). Rendered pages go through the same gate
+and are marked `rendered: true`. Playwright is the optional `browser` extra; `run_signalpost.sh` installs it and
+`chromium-headless-shell` best-effort, and the run continues statically if either is missing
+(`operations.js_render` in the report says which). `SIGNALPOST_JS_FALLBACK=0` turns it off.
+
+Budget: discovery cap 14 → 20 requests per company, deadline 40 → 45 s, up to 16 candidates (DNS-checked in parallel).
+
+Also fixed: concurrent runs sharing the Nav cache could clobber one temp file and fail the whole feed
+(`source_error` for all 100 companies in ops-003); the temp name is now per process/thread and a cache write
+failure no longer fails the sync. A list-valued role-holder name crashed the change description in synthesis
+(and then the site build); both are tolerant now.
+
+| run | websites | social | news | careers pages | any job posting | Nav jobs | contact | description |
+|---|---|---|---|---|---|---|---|---|
+| ops-003 → ops-004 | 39 → 44 | 26 → 30 | 15 → 17 | 12 → 14 | 1 → 4 | 0 → 3 | 36 → 41 | 37 → 42 |
+
+All 5 new ops websites were spot-checked by hand against the Brreg name/address/org number (0 wrong).

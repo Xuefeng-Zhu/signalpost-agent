@@ -531,7 +531,10 @@ def _describe_change(change: dict) -> str:
     label = CHANGE_LABELS.get(field, field)
     if field == "roles.roles":
         def keyset(rows):
-            return {(r.get("role_code"), r.get("name")) for r in rows or [] if not r.get("inactive")}
+            def text(value):
+                # role holder names can arrive as a list (an entity with several name lines)
+                return " ".join(str(v) for v in value) if isinstance(value, (list, tuple)) else value
+            return {(text(r.get("role_code")), text(r.get("name"))) for r in rows or [] if isinstance(r, dict) and not r.get("inactive")}
         added = sorted(keyset(new) - keyset(old), key=str)
         removed = sorted(keyset(old) - keyset(new), key=str)
         bits = []

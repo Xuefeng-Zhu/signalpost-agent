@@ -225,7 +225,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-every", type=int, default=25)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no-website-discovery", action="store_true", help="Only check the registry hjemmeside")
-    parser.add_argument("--website-request-cap", type=int, default=14, help="Per-company HTTP cap for website discovery probes")
+    parser.add_argument("--website-request-cap", type=int, default=20, help="Per-company HTTP cap for website discovery probes (a headless render counts as one)")
     parser.add_argument("--site-signals-request-cap", type=int, default=8, help="Per-company HTTP cap for verified-site signal pages")
     parser.add_argument("--nav-window-days", type=int, default=183, help="Nav job feed sync window (ads are active at most ~6 months)")
     parser.add_argument("--nav-cache", default=".cache/nav-job-feed-headers.jsonl.gz", help="Declared external cache of Nav feed headers ('' disables)")
@@ -280,6 +280,21 @@ def main() -> None:
                 if profile.get(key) is None and live["value"].get(key) is not None:
                     profile[key] = live["value"][key]
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": [], "dns_lookups": 0}
+        extra = {"requests": 0, "bytes": 0, "latencies_ms": []}
+        site_requests = nav_requests = 0
+        # Nav jobs run before website discovery: an ad whose employer.orgnr is exact declares the
+        # employer homepage, which becomes one more website *lead* (still identity-gated on the site).
+        if "nav_jobs" in requested_modules:
+            try:
+                if nav_thread is not None:
+                    nav_thread.join()  # feed sync overlaps with the bulk scan and registry fetches; joined only when needed
+                jobs_record, jobs_metrics = collect_nav_jobs(profile, nav_feed)
+            except Exception as exc:
+                jobs_record, jobs_metrics = evidence("nav_jobs", "source_error", "nav_job_vacancy_feed", "https://pam-stilling-feed.nav.no/api/v1/feed", note=f"nav_jobs failed: {type(exc).__name__}: {str(exc)[:160]}"), {"requests": 0, "bytes": 0, "latencies_ms": []}
+            profile["evidence"]["nav_jobs"] = jobs_record
+            nav_requests = jobs_metrics["requests"]
+            for key in extra:
+                extra[key] += jobs_metrics[key]
         if "website" in requested_modules:
             try:
                 website_record, website_metrics = resolve_official_website(
@@ -288,8 +303,6 @@ def main() -> None:
             except Exception as exc:  # never drop a company because website discovery crashed
                 website_record = evidence("website", "source_error", "registry_linked_company_website", "https://data.brreg.no/enhetsregisteret/api/enheter", note=f"website step failed: {type(exc).__name__}: {str(exc)[:160]}")
             profile["evidence"]["website"] = website_record
-        extra = {"requests": 0, "bytes": 0, "latencies_ms": []}
-        site_requests = nav_requests = 0
         if "site_signals" in requested_modules:
             try:
                 site_record, site_metrics = collect_site_signals(profile, profile["evidence"].get("website"), max_requests=args.site_signals_request_cap)
@@ -300,17 +313,6 @@ def main() -> None:
             site_requests = site_metrics["requests"]
             for key in extra:
                 extra[key] += site_metrics[key]
-        if "nav_jobs" in requested_modules:
-            try:
-                if nav_thread is not None:
-                    nav_thread.join()  # feed sync overlaps with registry/website work; joined only when needed
-                jobs_record, jobs_metrics = collect_nav_jobs(profile, nav_feed)
-            except Exception as exc:
-                jobs_record, jobs_metrics = evidence("nav_jobs", "source_error", "nav_job_vacancy_feed", "https://pam-stilling-feed.nav.no/api/v1/feed", note=f"nav_jobs failed: {type(exc).__name__}: {str(exc)[:160]}"), {"requests": 0, "bytes": 0, "latencies_ms": []}
-            profile["evidence"]["nav_jobs"] = jobs_record
-            nav_requests = jobs_metrics["requests"]
-            for key in extra:
-                extra[key] += jobs_metrics[key]
         metric = {
             "requests": len(metrics) + website_metrics["requests"] + extra["requests"],
             "bytes": sum(item.bytes_received for item in metrics) + website_metrics["bytes"] + extra["bytes"],
@@ -399,6 +401,8 @@ def main() -> None:
     operations["runtime_s"] = round(__import__("time").monotonic() - run_clock, 1)
     operations["wall_s_including_bulk_scan_and_nav_sync"] = round(__import__("time").monotonic() - wall_clock, 1)
     operations["third_party_cost_usd"] = 0
+    from norway_company_agent import js_render
+    operations["js_render"] = js_render.status()
     if nav_sync_summary:
         operations["nav_feed_sync"] = nav_sync_summary
         nav_sync_summary["sync_requests"] = nav_sync_summary["requests"] - operations["nav_detail_requests"]

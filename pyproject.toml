@@ -13,6 +13,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional headless-Chromium fallback for JS-only company sites (website discovery).
+# Install with: uv sync --extra browser && uv run playwright install chromium-headless-shell
+browser = [
+  "playwright>=1.55,<2",
+]
 crawler = [
   "scrapy>=2.13,<3",
   "scrapy-playwright>=0.0.44,<1",

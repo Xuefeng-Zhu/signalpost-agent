@@ -1116,6 +1116,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+browser = [
+    { name = "playwright" },
+]
 crawler = [
     { name = "scrapy" },
     { name = "scrapy-playwright" },
@@ -1132,6 +1135,7 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.14,<5" },
     { name = "extruct", specifier = ">=0.18,<1" },
     { name = "lxml", specifier = ">=6,<7" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.55,<2" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pypdf", specifier = ">=6,<7" },
     { name = "scrapy", marker = "extra == 'crawler'", specifier = ">=2.13,<3" },
@@ -1141,7 +1145,7 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sentiment'", specifier = ">=4.51,<5" },
 ]
-provides-extras = ["crawler", "sentiment"]
+provides-extras = ["browser", "crawler", "sentiment"]
 
 [[package]]
 name = "numpy"

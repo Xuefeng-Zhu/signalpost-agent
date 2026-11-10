@@ -195,3 +195,18 @@ Email the repository URL, run command, models/APIs and expected cost per 100-com
 - Output contract: every envelope now also carries the top-level `run`, `claims`, `evidence`, `errors` and `operations` fields from OUTPUT_CONTRACT.md, and each module state has an `availability` in the six required states. The nested `profile` is unchanged.
 - Resume: `--resume` reuses a checkpoint only when its fingerprint (git commit, code hash, input hash, modules, options) matches.
 - Smoke test at this commit: `out/smoke5/report.json` (100/100 envelopes, all 8 validation checks passed).
+
+## Revision 2 (recall, same identity gate)
+
+- More website leads, all still gated by org number or legal name + registered address on the site itself:
+  Nav ads' declared `employer.homepage` (only ads whose `employer.orgnr` is exact; Nav now runs before website
+  discovery), Brreg sub-units' own `hjemmeside`/`epostadresse`, `.no`/`.com` swaps of the Brreg e-mail domain,
+  and brand-shaped legal-name runs (`jeistad.no`). A brand-shaped domain is published only with homepage proof,
+  so chain/franchise sites that list the entity on a store page stay unpublished.
+- More identity pages per candidate (host-label name match, up to 4 contact/about/privacy pages with fallbacks).
+- Optional headless-Chromium fallback for JS-only sites (`src/norway_company_agent/js_render.py`, extra
+  `browser`). `run_signalpost.sh` installs it best-effort; without it the run is unchanged and static.
+  `SIGNALPOST_JS_FALLBACK=0` disables it. The report's `operations.js_render` shows whether it ran.
+- Fixes: Nav cache temp-file race (it failed the whole Nav module in ops-003), list-valued role names in the
+  change description, and the review site tolerating a failed synthesis.
+- Measurements: `notes/website-discovery.md` (Revision 2). Smoke test at this commit: `out/smoke6/report.json`.

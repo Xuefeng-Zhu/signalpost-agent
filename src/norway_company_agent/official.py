@@ -150,7 +150,23 @@ def normalize_locations(body: Any) -> dict[str, Any]:
         "address": item.get("beliggenhetsadresse") or item.get("postadresse"),
         "industry": item.get("naeringskode1"),
         "employees": item.get("antallAnsatte"),
-    } for item in rows]}
+    } for item in rows], "web_leads": _subunit_web_leads(rows)}
+
+
+def _subunit_web_leads(rows: list[Any]) -> list[dict[str, Any]]:
+    """Sub-unit ``hjemmeside``/``epostadresse`` values: website *leads* only (never published as-is).
+
+    Kept beside ``locations`` (not inside each row) so the refresh diff on registered workplaces is unchanged.
+    """
+    leads: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        for key, kind in (("hjemmeside", "subunit_hjemmeside"), ("epostadresse", "subunit_email")):
+            value = str(item.get(key) or "").strip()
+            if value:
+                leads.append({"kind": kind, "value": value, "subunit_organisation_number": item.get("organisasjonsnummer")})
+    return leads[:10]
 
 
 def normalize_entity(body: Any) -> dict[str, Any]:
