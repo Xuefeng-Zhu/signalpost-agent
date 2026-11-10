@@ -277,18 +277,24 @@ def collect_nav_jobs(profile: dict[str, Any], feed: NavJobsFeed | None, *, max_d
     candidates.sort(key=lambda r: str(r.get("sistEndret") or ""), reverse=True)
     postings: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    detail_failures = 0
     for record in candidates[:max_details]:
         started = time.monotonic()
         before_requests, before_bytes = feed.requests, feed.bytes
         try:
             status, body, raw = feed._get(record["url"] or f"/api/v1/feedentry/{record['uuid']}")
         except Exception as exc:  # noqa: BLE001
+            detail_failures += 1
             rejected.append({"uuid": record["uuid"], "reason": f"detail fetch failed: {str(exc)[:80]}"})
             continue
         finally:
             metrics["latencies_ms"].append(int((time.monotonic() - started) * 1000))
         metrics["requests"] += 1
         metrics["bytes"] += len(raw)
+        if status != 200:
+            detail_failures += 1
+            rejected.append({"uuid": record["uuid"], "reason": f"detail fetch failed: HTTP {status}"})
+            continue
         content = (body or {}).get("ad_content") or {}
         employer = content.get("employer") or {}
         employer_org = re.sub(r"\D", "", str(employer.get("orgnr") or ""))
@@ -337,6 +343,8 @@ def collect_nav_jobs(profile: dict[str, Any], feed: NavJobsFeed | None, *, max_d
         "active_count": len(postings),
         "candidates_checked": min(len(candidates), max_details),
         "candidates_total": len(candidates),
+        "detail_failures": detail_failures,
+        "collection_complete": detail_failures == 0 and len(candidates) <= max_details,
         "rejected_candidates": rejected[:20],
         "match_policy": "candidate by normalized legal/subunit name in feed header; publish only when ad detail employer.orgnr is the entity or its own Brreg subunit",
         "names_matched": names,

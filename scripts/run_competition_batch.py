@@ -39,11 +39,13 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
                     continue
                 try:
                     row = json.loads(line)
-                    row = row.get("profile", row)  # accept profiles or envelopes
+                    row = row.get("profile", row) if isinstance(row, dict) else row
+                    if not valid_profile_row(row):
+                        raise ValueError("invalid profile row")
                     previous[row["organisation_number"]] = row
                 except (ValueError, KeyError, AttributeError):
                     previous_meta["unreadable_rows"] = previous_meta.get("unreadable_rows", 0) + 1
-        except OSError as exc:  # a missing/unreadable snapshot must not abort the batch
+        except (OSError, UnicodeError) as exc:  # a missing/unreadable snapshot must not abort the batch
             previous_meta = {"path": str(previous_path), "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
             previous = {}
     stats = {"previous_snapshot": previous_meta, "companies_compared": 0, "companies_with_changes": 0, "changes": 0, "fields_changed": {}}
@@ -82,8 +84,8 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
         except Exception as exc:  # keep the company's envelope even if synthesis breaks
             profile.setdefault("errors", []).append({"stage": "synthesis", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
             profile["synthesis"] = {
-                "method": "synthesis_failed", "statements": [], "unknowns": ["synthesis could not be built for this company"],
-                "validation": {"dropped": [], "all_supported": True}, "llm_polish": {"status": "not_attempted"}, "state": "failed",
+                "method": "synthesis_failed", "statements": [], "unknowns": [{"label": "Synthesis", "state": "failed", "reason": "synthesis could not be built for this company"}],
+                "validation": {"dropped": [], "all_supported": False}, "llm_polish": {"status": "not_attempted"}, "state": "failed",
             }
     config = llm_config() if use_llm else None
     llm = {"configured": bool(config), "accepted": 0, "rejected": 0, "failed": 0}
@@ -103,6 +105,7 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
     statements = [len(p["synthesis"]["statements"]) for p in profiles]
     stats["synthesis"] = {
         "method": next((p["synthesis"]["method"] for p in profiles if p["synthesis"].get("method") != "synthesis_failed"), None),
+        "companies_failed": sum(p["synthesis"].get("state") == "failed" for p in profiles),
         "statements_published": sum(statements),
         "statements_dropped_by_support_check": sum(len((p["synthesis"].get("validation") or {}).get("dropped") or []) for p in profiles),
         "min_statements_per_company": min(statements) if statements else 0,
@@ -111,6 +114,79 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
         "runtime_ms": round((time.monotonic() - clock) * 1000),
     }
     return stats
+
+
+def valid_profile_row(row) -> bool:
+    """Validate the container shape before trusting optional snapshot/checkpoint data."""
+    return (isinstance(row, dict)
+            and isinstance(row.get("organisation_number"), str)
+            and len(row["organisation_number"]) == 9
+            and row["organisation_number"].isascii()
+            and row["organisation_number"].isdigit()
+            and isinstance(row.get("errors", []), list)
+            and all(isinstance(error, dict) for error in row.get("errors", []))
+            and isinstance(row.get("run_metrics", {}), dict)
+            and isinstance(row.get("evidence", {}), dict)
+            and all(isinstance(record, dict) for record in row.get("evidence", {}).values()))
+
+
+def valid_checkpoint_row(row, modules: list[str]) -> bool:
+    """Probe the actual pure consumers, not just the checkpoint's outer shape.
+
+    Optional checkpoints are untrusted input. Nested evidence varies by module;
+    exercising the same envelope, summary and synthesis code catches malformed
+    metadata and values without maintaining a second, drifting module schema.
+    """
+    if not valid_profile_row(row):
+        return False
+    import copy
+    try:
+        profile = copy.deepcopy(row)
+        for key in ("synthesis", "refresh", "changes"):
+            profile.pop(key, None)
+        terminal_envelope(profile, run_id="checkpoint_validation", modules=modules,
+                          started_at="checkpoint_validation", completed_at="checkpoint_validation")
+        website_summary([profile])
+        signal_summary([profile])
+        build_synthesis(profile)
+    except Exception:
+        return False
+    return True
+
+
+def file_digest(path: str | Path) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def cache_identity(path: str | None) -> dict | None:
+    if not path:
+        return None
+    result = {"path": str(Path(path).resolve())}
+    try:
+        result["sha256"] = file_digest(path)
+    except FileNotFoundError:
+        result["sha256"] = None
+    except OSError as exc:
+        result["error"] = type(exc).__name__
+    return result
+
+
+def checkpoint_matches(saved, current: dict) -> bool:
+    if not isinstance(saved, dict):
+        return False
+    saved = dict(saved)
+    cache_after = saved.pop("nav_cache_after", None)
+    current = dict(current)
+    # The cache is an input and a mutable output. Accept only the exact cache
+    # left by this checkpoint, not arbitrary subsequent edits to that file.
+    if cache_after is not None and current.get("nav_cache") == cache_after:
+        current["nav_cache"] = saved.get("nav_cache")
+    return saved == current
 
 
 def run_fingerprint(organisations_path: str, modules: list[str], args) -> dict:
@@ -132,9 +208,14 @@ def run_fingerprint(organisations_path: str, modules: list[str], args) -> dict:
         "git_commit": commit,
         "git_dirty": dirty,
         "code_sha256": code.hexdigest(),
-        "input_sha256": hashlib.sha256(Path(organisations_path).read_bytes()).hexdigest(),
+        "input_sha256": file_digest(organisations_path),
+        "bulk_sha256": file_digest(args.bulk),
+        "nav_cache": cache_identity(args.nav_cache) if "nav_jobs" in modules else None,
         "modules": sorted(modules),
-        "options": {"no_website_discovery": bool(args.no_website_discovery), "website_request_cap": args.website_request_cap},
+        "options": {"no_website_discovery": bool(args.no_website_discovery),
+                    "website_request_cap": args.website_request_cap,
+                    "site_signals_request_cap": args.site_signals_request_cap,
+                    "nav_window_days": args.nav_window_days},
     }
 
 
@@ -246,11 +327,8 @@ def main() -> None:
     requested_modules = [item.strip() for item in args.modules.split(",") if item.strip()]
     nav_feed = None
     nav_thread = None
-    if "nav_jobs" in requested_modules:
-        import threading
-        nav_feed = NavJobsFeed(window_days=args.nav_window_days, workers=16, cache_path=args.nav_cache or None)
-        nav_thread = threading.Thread(target=nav_feed.sync, daemon=True)
-        nav_thread.start()  # overlaps with the bulk CSV scan
+    # Snapshot cache identity before any sync can modify it.
+    fingerprint = run_fingerprint(args.organisations, requested_modules, args)
     profiles, registry_metadata = profiles_from_bulk(args.bulk, orgs)
     annotations = {item["organisation_number"]: item for item in organisation_inputs}
     for profile in profiles:
@@ -328,7 +406,6 @@ def main() -> None:
     state: dict[str, dict] = {}
     resumed_profiles = 0
     profiles_output = Path(args.profiles_output)
-    fingerprint = run_fingerprint(args.organisations, requested_modules, args)
     fingerprint_path = profiles_output.with_name(profiles_output.name + ".fingerprint.json")
     resume_note = None
     if args.resume and profiles_output.exists():
@@ -338,14 +415,17 @@ def main() -> None:
         except (OSError, ValueError):
             saved = None
         prior = []
-        if saved != fingerprint:
+        if not checkpoint_matches(saved, fingerprint):
             resume_note = "resume ignored: checkpoint fingerprint (code, input, modules, options) does not match this run"
         else:
             try:
                 prior = [json.loads(line) for line in profiles_output.read_text(encoding="utf-8").splitlines() if line.strip()]
-            except ValueError:
+            except (OSError, ValueError):
                 prior, resume_note = [], "resume ignored: checkpoint unreadable"
-            if prior and not set(item["organisation_number"] for item in prior).issubset(set(orgs)):
+            if any(not valid_checkpoint_row(item, requested_modules) for item in prior):
+                prior, resume_note = [], "resume ignored: checkpoint contains invalid profile rows"
+            if prior and (len({item["organisation_number"] for item in prior}) != len(prior)
+                          or not set(item["organisation_number"] for item in prior).issubset(set(orgs))):
                 prior, resume_note = [], "resume ignored: checkpoint membership is not a subset of this batch"
         if resume_note:
             print(resume_note, file=sys.stderr)
@@ -356,6 +436,21 @@ def main() -> None:
         }
         resumed_profiles = len(state)
     pending_profiles = [profile for profile in profiles if profile["organisation_number"] not in state]
+    if "nav_jobs" in requested_modules and pending_profiles:
+        import threading
+        nav_feed = NavJobsFeed(window_days=args.nav_window_days, workers=16, cache_path=args.nav_cache or None)
+        nav_thread = threading.Thread(target=nav_feed.sync, daemon=True)
+        nav_thread.start()
+
+    def save_fingerprint():
+        saved = dict(fingerprint)
+        if "nav_jobs" in requested_modules:
+            # Checkpoints must not race a cache writer, including error paths.
+            if nav_thread is not None:
+                nav_thread.join()
+            saved["nav_cache_after"] = cache_identity(args.nav_cache)
+        fingerprint_path.write_text(json.dumps(saved, sort_keys=True), encoding="utf-8")
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         pending_by_org = {profile["organisation_number"]: profile for profile in pending_profiles}
         futures = {pool.submit(enrich, profile): profile["organisation_number"] for profile in pending_profiles}
@@ -381,7 +476,7 @@ def main() -> None:
             if index % args.checkpoint_every == 0 or index == len(pending_profiles):
                 checkpoint = [state[org] for org in orgs if org in state]
                 write_jsonl(profiles_output, checkpoint)
-                fingerprint_path.write_text(json.dumps(fingerprint, sort_keys=True), encoding="utf-8")
+                save_fingerprint()
 
     if nav_thread is not None:
         nav_thread.join()
@@ -395,6 +490,7 @@ def main() -> None:
     ]
     validation = validate_envelopes(envelopes, args.expected_count)
     write_jsonl(profiles_output, ordered_profiles)
+    save_fingerprint()
     write_jsonl(Path(args.output), envelopes)
     latencies = sorted(operations.pop("latencies_ms"))
     operations["p50_ms"] = latencies[len(latencies) // 2] if latencies else None
@@ -426,12 +522,18 @@ def main() -> None:
         "signal_summary": signal_summary(ordered_profiles),
         "refresh_and_synthesis": refresh_summary,
     }
+    report_path = Path(args.report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    # Persist the batch result before optional presentation work.
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.site_dir:
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from build_site import build_site  # noqa: E402
-        report["site"] = build_site([(args.run_id, Path(args.profiles_output))], Path(args.site_dir))
-    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        try:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            from build_site import build_site  # noqa: E402
+            report["site"] = build_site([(args.run_id, Path(args.profiles_output))], Path(args.site_dir))
+        except Exception as exc:
+            report["site"] = {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     raise SystemExit(0 if validation["passed"] else 1)
 

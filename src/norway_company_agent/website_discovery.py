@@ -245,14 +245,16 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
         return result
     if group:
         against.append(f"group/parent marker on the site: {group!r}")
+    # A shared address cannot resolve contradictory legal names anywhere on the site.
+    # Exact organisation-number proof above remains the stronger positive evidence.
+    competing = list(dict.fromkeys(
+        name for page in pages for name in (page.get("identity_signals") or {}).get("competing_legal_names", [])
+    ))
+    if competing:
+        against.append("site also names a different legal entity: " + "; ".join(competing[:3]))
     for page in pages:
         signals = page.get("identity_signals") or {}
         if signals.get("legal_name_present") and signals.get("postcode_present") and signals.get("street_present"):
-            if signals.get("competing_legal_names"):
-                # A sister entity ("Consto Bergen AS" vs "Consto AS") can share name and address;
-                # without the organisation number this is not exact-company proof.
-                against.append("page also names a different legal entity: " + "; ".join(signals["competing_legal_names"][:3]))
-                continue
             status = "exact" if not against else "conflict"
             return {
                 "status": status,
@@ -268,9 +270,10 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
                 "score": 0.92,
                 "method": METHOD,
             }
+    # Preserve contradictions for the final gate; name-only fallback must not erase them.
     named = any((page.get("identity_signals") or {}).get("legal_name_present") for page in pages)
     return {
-        "status": "name_only" if named else "absent",
+        "status": "conflict" if against else "name_only" if named else "absent",
         "publishable": False,
         "evidence_for": ["legal name appears on the site"] if named else [],
         "evidence_against": against + ["organisation number not found on the captured pages"],

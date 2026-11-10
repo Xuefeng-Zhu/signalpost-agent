@@ -21,33 +21,46 @@ def _tokens(value: Any) -> list[str]:
 
 
 _LEGAL_SUFFIX_RE = re.compile(
-    r"((?:[0-9A-Za-zÆØÅæøåÉéÜüÖöÄä&.'\-]+\s+){1,6})(AS|ASA|ANS|DA|SA|NUF|BA|KS|SUS)(?![0-9A-Za-zÆØÅæøå])"
+    r"((?:[0-9A-Za-zÆØÅæøåÉéÜüÖöÄä&'\-]+\s+){1,12}?)"
+    r"(ASA|A/S|AS|ANS|DA|SA|NUF|BA|KS|SUS|ENK|IKS|STI|SF|KF|BBL|BRL|ESEK)(?![0-9A-Za-zÆØÅæøå])",
+    re.I,
 )
+# These introduce names in ordinary prose rather than distinguishing a legal entity.
+_NAME_INTRODUCERS = {"velkommen", "til", "welcome", "to", "om", "about", "kontakt", "contact",
+                     "hos", "fra", "by", "of", "is", "er", "are", "og", "and"}
 
 
 def competing_legal_names(legal_name: Any, texts: list[Any]) -> list[str]:
-    """Legal-name phrases on the page that contain every core token of ``legal_name`` but also
-    extra distinguishing tokens (``Consto Bergen AS`` when the entity is ``Consto AS``).
+    """Find incompatible legal names, retaining prefix qualifiers and legal forms.
 
-    Such a phrase names a *different* registered entity, so a name-only match must not be
-    treated as exact-company proof."""
+    Token inclusion alone cannot distinguish Bergen Consto AS from Consto AS, or
+    Consto ASA from Consto AS. Case and the spelling A/S do not change identity.
+    Ambiguous phrases are retained conservatively rather than asserted exact.
+    """
     core = _tokens(legal_name)
     if not core:
         return []
     core_set = set(core)
+    target_matches = list(_LEGAL_SUFFIX_RE.finditer(str(legal_name or "")))
+    target_form = target_matches[-1].group(2).casefold().replace("/", "") if target_matches else None
     found: list[str] = []
     for text in texts:
         for match in _LEGAL_SUFFIX_RE.finditer(str(text or "")):
             words = match.group(1).split()
-            # shortest tail window (ending at the legal suffix) that contains every core token
-            for start in range(len(words) - 1, -1, -1):
-                window = _tokens(" ".join(words[start:]))
-                if core_set.issubset(window):
-                    if set(window) != core_set:
-                        phrase = " ".join(words[start:]) + " " + match.group(2)
-                        if phrase not in found:
-                            found.append(phrase)
-                    break
+            # Trim prose introductions, but never silently discard a name qualifier
+            # merely because the shortest matching tail contains the target tokens.
+            first_core = next((i for i, word in enumerate(words) if core_set.intersection(_tokens(word))), len(words))
+            start = 0
+            for i, word in enumerate(words[:first_core]):
+                if word.casefold() in _NAME_INTRODUCERS:
+                    start = i + 1
+            words = words[start:]
+            window = _tokens(" ".join(words))
+            form = match.group(2).casefold().replace("/", "")
+            if core_set.issubset(window) and (window != core or (target_form and form != target_form)):
+                phrase = " ".join(words) + " " + match.group(2)
+                if phrase not in found:
+                    found.append(phrase)
     return found
 
 
@@ -91,6 +104,10 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     # Match the organisation number only as a standalone formatted run, never as a substring of a
     # longer concatenation of digits (phone lists, account numbers, IDs).
     homepage_org_hit = bool(org_digits) and any(item["digits"] == org_digits for item in find_org_numbers(homepage_candidate_text))
+    incompatible_org_numbers = sorted({
+        item["digits"] for part in candidate_parts for item in find_org_numbers(str(part or ""))
+        if org_digits and item["valid"] and item["digits"] != org_digits
+    })
     page_signals = [page for page in value.get("pages", []) if page.get("identity_signals")]
     org_proof = assess_org_proof(page_signals) if page_signals else None
     overlap = sorted(set(core) & candidate_tokens)
@@ -107,7 +124,10 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     substantive_homepage = len(str(value.get("main_text_excerpt") or "").strip()) >= 100
     competing = competing_legal_names(profile.get("name"), [*homepage_identity_parts, value.get("main_text_excerpt"), rendered.get("main_text_excerpt")])
     is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I))
-    if org_proof and org_proof.get("status") == "exact" and not any(marker in normalized_raw for marker in parked_markers):
+    if incompatible_org_numbers:
+        score = 0.5
+        reasons.append("conflicting identity evidence: other valid organisation numbers on the site: " + ", ".join(incompatible_org_numbers))
+    elif org_proof and org_proof.get("status") == "exact" and not any(marker in normalized_raw for marker in parked_markers):
         score = float(org_proof.get("score") or 0.97)
         reasons.extend(org_proof.get("evidence_for") or ["exact-entity proof on the site"])
     elif org_proof and org_proof.get("status") == "conflict":
