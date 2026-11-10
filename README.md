@@ -187,3 +187,11 @@ Submit a repository with:
 - declared models, APIs, licences and source-rights assumptions.
 
 Email the repository URL, run command, models/APIs and expected cost per 100-company run to `submit@builderr.ai`.
+
+## Revision 1 (safety fixes)
+
+- Identity: a page that names a different legal entity containing this company's name (e.g. "Consto Bergen AS" for CONSTO AS) is no longer accepted as exact-company proof without the organisation number, in both the registry-website gate and the legal-name-plus-address proof.
+- Batch resilience: official-fetch, enrichment, refresh-diff, synthesis and LLM-polish failures are caught per company and recorded as `failed`; companies missing from the bulk snapshot get a stub profile instead of aborting; a count mismatch only warns.
+- Output contract: every envelope now also carries the top-level `run`, `claims`, `evidence`, `errors` and `operations` fields from OUTPUT_CONTRACT.md, and each module state has an `availability` in the six required states. The nested `profile` is unchanged.
+- Resume: `--resume` reuses a checkpoint only when its fingerprint (git commit, code hash, input hash, modules, options) matches.
+- Smoke test at this commit: `out/smoke5/report.json` (100/100 envelopes, all 8 validation checks passed).

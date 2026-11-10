@@ -86,9 +86,39 @@ def profiles_from_bulk(path: str | Path, organisation_numbers: Iterable[str]) ->
         if len(found) == len(wanted):
             break
     missing = [org for org in requested if org not in found]
-    if missing:
-        raise ValueError(f"Organisation numbers absent from registry snapshot: {missing[:10]}")
+    for org in missing:
+        # Never abort the batch: a company absent from the bulk snapshot (deleted, newly registered,
+        # stale snapshot) still gets a profile; the live registry module fills identity if it can.
+        found[org] = {
+            "organisation_number": org,
+            "name": None,
+            "legal_form": None,
+            "employees": None,
+            "bankrupt": None,
+            "liquidating": None,
+            "municipality": None,
+            "municipality_number": None,
+            "industry_code": None,
+            "industry_label": None,
+            "website": None,
+            "latest_submitted_accounts": None,
+            "registry_bulk_missing": True,
+            "evidence": {
+                "registry": evidence(
+                    "registry", "not_found", "official_registry_bulk",
+                    "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv",
+                    retrieved_at=retrieved_at, content_sha256=snapshot_sha256, source_row_key=org,
+                    note="organisation number not present in the registry bulk snapshot",
+                ),
+                "accounting_obligation": evidence(
+                    "accounting_obligation", "not_found", "official_rule_interpretation",
+                    "https://www.brreg.no/en/submission-of-annual-accounts/reporting-obligations-to-the-register-of-company-accounts/",
+                    retrieved_at=retrieved_at, note="no registry bulk row to assess",
+                ),
+            },
+        }
     return [found[org] for org in requested], {
+        "missing_from_bulk_snapshot": missing,
         "registry_snapshot_sha256": snapshot_sha256,
         "registry_rows_scanned": scanned,
         "requested": len(requested),
@@ -148,7 +178,100 @@ def terminal_envelope(
         envelope["refresh"] = body.pop("refresh", None)
         envelope["changes"] = body.get("changes") or []
     envelope["profile"] = body
+    envelope.update(contract_fields(profile, module_states, run_id=run_id, started_at=started_at, completed_at=completed_at))
     return envelope
+
+
+# Mapping from internal module states to the six availability states the challenge requires.
+AVAILABILITY = {
+    "complete": "available",
+    "not_found": "not_available",
+    "not_applicable": "not_applicable",
+    "ambiguous": "ambiguous",
+    "blocked_policy": "blocked",
+    "blocked_robots": "blocked",
+    "source_error": "failed",
+    "budget_exhausted": "failed",
+    "submission_error": "failed",
+}
+AVAILABILITY_STATES = {"available", "not_available", "blocked", "not_applicable", "ambiguous", "failed"}
+
+
+def _small(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool)) and len(str(value)) <= 500
+
+
+def contract_fields(profile: dict[str, Any], module_states: dict[str, dict], *, run_id: str, started_at: str, completed_at: str) -> dict[str, Any]:
+    """Top-level fields of OUTPUT_CONTRACT.md (run, claims, evidence, errors, operations), derived
+    from the same evidence records as the nested profile so the two can never disagree."""
+    records = profile.get("evidence", {}) or {}
+    evidence_rows: list[dict[str, Any]] = []
+    claims: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for module, state in module_states.items():
+        availability = AVAILABILITY.get(state["state"], "failed")
+        state["availability"] = availability
+        record = records.get(module) or {}
+        ev_id = f"ev-{module}"
+        if record:
+            evidence_rows.append({
+                "id": ev_id,
+                "field": module,
+                "source_url": record.get("source_url"),
+                "source_class": record.get("source_class") or record.get("source_type"),
+                "retrieved_at": record.get("retrieved_at"),
+                "content_sha256": record.get("content_sha256"),
+                "as_of": record.get("as_of"),
+                "claim_span": record.get("note"),
+            })
+        value = record.get("value")
+        claim = {
+            "field": module,
+            "availability": availability,
+            "confidence": 1.0 if availability == "available" and str(record.get("source_class") or "").startswith("official") else None,
+            "evidence_ids": [ev_id] if record else [],
+        }
+        if _small(value):
+            claim["value"] = value
+        else:
+            claim["value_ref"] = f"profile.evidence.{module}.value"
+        claims.append(claim)
+        if availability == "failed":
+            errors.append({"field": module, "state": state["state"], "message": record.get("note") or "module produced no terminal record"})
+    official = (records.get("website") or {}).get("official_website")
+    if official:
+        ev = dict(official.get("evidence") or {})
+        ev["id"] = "ev-official_website"
+        ev["field"] = "official_website"
+        evidence_rows.append(ev)
+        claims.append({
+            "field": "official_website",
+            "value": official.get("value"),
+            "availability": "available",
+            "confidence": official.get("confidence"),
+            "identity_method": official.get("identity_method"),
+            "evidence_ids": ["ev-official_website"],
+        })
+    for item in profile.get("errors") or []:
+        errors.append({"field": item.get("stage"), "state": "failed", "message": item.get("error")})
+    metrics = profile.get("run_metrics") or {}
+    return {
+        "run": {
+            "run_id": run_id,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "terminal_status": "completed" if not any(s["state"] == "submission_error" for s in module_states.values()) else "failed",
+        },
+        "claims": claims,
+        "evidence": evidence_rows,
+        "errors": errors,
+        "operations": {
+            "requests": metrics.get("requests"),
+            "bytes": metrics.get("bytes"),
+            "runtime_ms": None,  # per-company wall time is not separable in the concurrent run; see report.json operations
+            "third_party_cost_usd": 0,
+        },
+    }
 
 
 def validate_envelopes(envelopes: list[dict[str, Any]], expected_count: int) -> dict[str, Any]:
@@ -165,6 +288,10 @@ def validate_envelopes(envelopes: list[dict[str, Any]], expected_count: int) -> 
         "all_entity_states_terminal": all(item.get("state") in TERMINAL_STATES for item in envelopes),
         "all_module_states_terminal": not invalid_states,
         "zero_silent_drops": len(envelopes) == expected_count and len(orgs) == len(set(orgs)),
+        "contract_fields_present": all(all(key in item for key in ("run", "claims", "evidence", "errors", "operations")) for item in envelopes),
+        "all_availability_states_valid": all(
+            state.get("availability") in AVAILABILITY_STATES for item in envelopes for state in item.get("modules", {}).values()
+        ),
     }
     if any("synthesis" in item for item in envelopes):
         from .synthesis import validate_synthesis

@@ -152,6 +152,7 @@ def identity_hints(profile: dict[str, Any]) -> dict[str, Any]:
     street_words = [w for w in _words(street_line) if not w.isdigit() and len(w) > 2]
     return {
         "organisation_number": re.sub(r"\D", "", str(profile.get("organisation_number") or "")),
+        "legal_name": str(profile.get("name") or ""),
         "legal_name_words": _words(profile.get("name")),
         "postcode": str(raw.get("forretningsadresse.postnummer") or "").strip(),
         "street_words": street_words[:3],
@@ -197,6 +198,11 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
         "group_marker": next((marker for marker in GROUP_MARKERS if _ascii_fold(marker) in _ascii_fold(title) + " " + folded[:4000]), None),
         "text_length": len(text),
     }
+    legal_name = (hints or {}).get("legal_name") or ""
+    if legal_name:
+        from .identity import competing_legal_names  # local import: identity imports this module
+
+        signals["competing_legal_names"] = competing_legal_names(legal_name, [title, text[:20000]])[:5]
     return {"signals": signals, "links": links}
 
 
@@ -241,6 +247,11 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
     for page in pages:
         signals = page.get("identity_signals") or {}
         if signals.get("legal_name_present") and signals.get("postcode_present") and signals.get("street_present"):
+            if signals.get("competing_legal_names"):
+                # A sister entity ("Consto Bergen AS" vs "Consto AS") can share name and address;
+                # without the organisation number this is not exact-company proof.
+                against.append("page also names a different legal entity: " + "; ".join(signals["competing_legal_names"][:3]))
+                continue
             status = "exact" if not against else "conflict"
             return {
                 "status": status,

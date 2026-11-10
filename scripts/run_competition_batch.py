@@ -31,20 +31,34 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
     previous: dict[str, dict] = {}
     previous_meta = None
     if previous_path:
-        raw = Path(previous_path).read_bytes()
-        previous_meta = {"path": str(previous_path), "sha256": hashlib.sha256(raw).hexdigest()}
-        for line in raw.decode("utf-8").splitlines():
-            if line.strip():
-                row = json.loads(line)
-                row = row.get("profile", row)  # accept profiles or envelopes
-                previous[row["organisation_number"]] = row
+        try:
+            raw = Path(previous_path).read_bytes()
+            previous_meta = {"path": str(previous_path), "sha256": hashlib.sha256(raw).hexdigest()}
+            for line in raw.decode("utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                    row = row.get("profile", row)  # accept profiles or envelopes
+                    previous[row["organisation_number"]] = row
+                except (ValueError, KeyError, AttributeError):
+                    previous_meta["unreadable_rows"] = previous_meta.get("unreadable_rows", 0) + 1
+        except OSError as exc:  # a missing/unreadable snapshot must not abort the batch
+            previous_meta = {"path": str(previous_path), "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+            previous = {}
     stats = {"previous_snapshot": previous_meta, "companies_compared": 0, "companies_with_changes": 0, "changes": 0, "fields_changed": {}}
     for profile in profiles:
         for key in ("synthesis", "refresh", "changes"):
             profile.pop(key, None)
         org = profile["organisation_number"]
         prior = previous.get(org)
-        changes = classify_refresh_failures(prior, profile, diff_profile(prior, profile)) if prior else []
+        try:
+            changes = classify_refresh_failures(prior, profile, diff_profile(prior, profile)) if prior else []
+        except Exception as exc:  # a malformed previous row must not abort the batch
+            changes = []
+            prior = None
+            stats["diff_errors"] = stats.get("diff_errors", 0) + 1
+            profile.setdefault("errors", []).append({"stage": "refresh_diff", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
         material = [c for c in changes if c.get("material", True)]
         refresh = {
             "previous_snapshot_supplied": bool(previous_path),
@@ -63,28 +77,65 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
                 stats["fields_changed"][change["field"]] = stats["fields_changed"].get(change["field"], 0) + 1
         profile["changes"] = changes
         profile["refresh"] = refresh
-        profile["synthesis"] = build_synthesis(profile, changes=changes, refresh=refresh)
+        try:
+            profile["synthesis"] = build_synthesis(profile, changes=changes, refresh=refresh)
+        except Exception as exc:  # keep the company's envelope even if synthesis breaks
+            profile.setdefault("errors", []).append({"stage": "synthesis", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
+            profile["synthesis"] = {
+                "method": "synthesis_failed", "statements": [], "unknowns": ["synthesis could not be built for this company"],
+                "validation": {"dropped": [], "all_supported": True}, "llm_polish": {"status": "not_attempted"}, "state": "failed",
+            }
     config = llm_config() if use_llm else None
     llm = {"configured": bool(config), "accepted": 0, "rejected": 0, "failed": 0}
     if config:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            list(pool.map(lambda p: polish_with_llm(p["synthesis"], config), profiles))
+            def _polish(p):
+                try:
+                    polish_with_llm(p["synthesis"], config)
+                except Exception as exc:  # LLM polish is optional; deterministic text stays
+                    p["synthesis"]["llm_polish"] = {"status": f"failed: {type(exc).__name__}"}
+            list(pool.map(_polish, profiles))
         for p in profiles:
-            status = p["synthesis"]["llm_polish"]["status"]
+            status = (p["synthesis"].get("llm_polish") or {}).get("status") or "failed"
             key = "accepted" if status == "accepted" else "rejected" if status.startswith("rejected") else "failed"
             llm[key] += 1
         llm["model"] = config["model"]
     statements = [len(p["synthesis"]["statements"]) for p in profiles]
     stats["synthesis"] = {
-        "method": profiles[0]["synthesis"]["method"] if profiles else None,
+        "method": next((p["synthesis"]["method"] for p in profiles if p["synthesis"].get("method") != "synthesis_failed"), None),
         "statements_published": sum(statements),
-        "statements_dropped_by_support_check": sum(len(p["synthesis"]["validation"]["dropped"]) for p in profiles),
+        "statements_dropped_by_support_check": sum(len((p["synthesis"].get("validation") or {}).get("dropped") or []) for p in profiles),
         "min_statements_per_company": min(statements) if statements else 0,
         "companies_with_unknowns": sum(1 for p in profiles if p["synthesis"]["unknowns"]),
         "llm_polish": llm,
         "runtime_ms": round((time.monotonic() - clock) * 1000),
     }
     return stats
+
+
+def run_fingerprint(organisations_path: str, modules: list[str], args) -> dict:
+    """Ties a resume checkpoint to the exact code, input batch and options that produced it."""
+    import hashlib
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    try:
+        commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip() or None
+        dirty = bool(subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", "src", "scripts"], capture_output=True, text=True, timeout=5).stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        commit, dirty = None, True
+    code = hashlib.sha256()
+    for path in sorted((root / "src").rglob("*.py")) + sorted((root / "scripts").glob("*.py")):
+        code.update(path.relative_to(root).as_posix().encode())
+        code.update(path.read_bytes())
+    return {
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "code_sha256": code.hexdigest(),
+        "input_sha256": hashlib.sha256(Path(organisations_path).read_bytes()).hexdigest(),
+        "modules": sorted(modules),
+        "options": {"no_website_discovery": bool(args.no_website_discovery), "website_request_cap": args.website_request_cap},
+    }
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -189,7 +240,9 @@ def main() -> None:
     organisation_inputs = read_organisation_inputs(args.organisations)
     orgs = [item["organisation_number"] for item in organisation_inputs]
     if len(orgs) != args.expected_count:
-        raise SystemExit(f"Expected {args.expected_count} organisations, received {len(orgs)}")
+        # Never refuse a batch over a count mismatch: every supplied company still gets an envelope.
+        print(f"warning: --expected-count {args.expected_count} but the input has {len(orgs)} organisations; using {len(orgs)}", file=sys.stderr)
+        args.expected_count = len(orgs)
     requested_modules = [item.strip() for item in args.modules.split(",") if item.strip()]
     nav_feed = None
     nav_thread = None
@@ -212,8 +265,20 @@ def main() -> None:
     run_clock = __import__("time").monotonic()
 
     def enrich(profile: dict) -> tuple[dict, dict]:
-        records, metrics = fetch_official_modules(profile["organisation_number"], fetch_modules)
+        try:
+            records, metrics = fetch_official_modules(profile["organisation_number"], fetch_modules)
+        except Exception as exc:  # never drop a company because an official fetch crashed
+            records = {
+                module: evidence(module, "source_error", "official_registry_api", "https://data.brreg.no/enhetsregisteret/api/enheter", note=f"official fetch failed: {type(exc).__name__}: {str(exc)[:160]}")
+                for module in fetch_modules
+            }
+            metrics = []
         profile["evidence"].update(records)
+        live = (records.get("registry_live") or {})
+        if profile.get("registry_bulk_missing") and live.get("status") == "available" and isinstance(live.get("value"), dict):
+            for key in ("name", "legal_form"):
+                if profile.get(key) is None and live["value"].get(key) is not None:
+                    profile[key] = live["value"][key]
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": [], "dns_lookups": 0}
         if "website" in requested_modules:
             try:
@@ -261,10 +326,27 @@ def main() -> None:
     state: dict[str, dict] = {}
     resumed_profiles = 0
     profiles_output = Path(args.profiles_output)
+    fingerprint = run_fingerprint(args.organisations, requested_modules, args)
+    fingerprint_path = profiles_output.with_name(profiles_output.name + ".fingerprint.json")
+    resume_note = None
     if args.resume and profiles_output.exists():
-        prior = [json.loads(line) for line in profiles_output.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if not set(item["organisation_number"] for item in prior).issubset(set(orgs)):
-            raise SystemExit("Resume profile membership is not a subset of this batch")
+        saved = None
+        try:
+            saved = json.loads(fingerprint_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = None
+        prior = []
+        if saved != fingerprint:
+            resume_note = "resume ignored: checkpoint fingerprint (code, input, modules, options) does not match this run"
+        else:
+            try:
+                prior = [json.loads(line) for line in profiles_output.read_text(encoding="utf-8").splitlines() if line.strip()]
+            except ValueError:
+                prior, resume_note = [], "resume ignored: checkpoint unreadable"
+            if prior and not set(item["organisation_number"] for item in prior).issubset(set(orgs)):
+                prior, resume_note = [], "resume ignored: checkpoint membership is not a subset of this batch"
+        if resume_note:
+            print(resume_note, file=sys.stderr)
         state = {
             item["organisation_number"]: item
             for item in prior
@@ -273,9 +355,19 @@ def main() -> None:
         resumed_profiles = len(state)
     pending_profiles = [profile for profile in profiles if profile["organisation_number"] not in state]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        pending_by_org = {profile["organisation_number"]: profile for profile in pending_profiles}
         futures = {pool.submit(enrich, profile): profile["organisation_number"] for profile in pending_profiles}
         for index, future in enumerate(as_completed(futures), 1):
-            profile, metric = future.result()
+            try:
+                profile, metric = future.result()
+            except Exception as exc:  # last-resort guard: one company's crash must not abort the batch
+                profile = pending_by_org[futures[future]]
+                note = f"company enrichment failed: {type(exc).__name__}: {str(exc)[:160]}"
+                for module in requested_modules:
+                    if module not in profile["evidence"]:
+                        profile["evidence"][module] = evidence(module, "source_error", "agent_runtime", "https://data.brreg.no/enhetsregisteret/api/enheter", note=note)
+                metric = {"requests": 0, "bytes": 0, "latencies_ms": [], "dns_lookups": 0, "website_requests": 0, "site_signals_requests": 0, "nav_detail_requests": 0}
+                profile["run_metrics"] = metric
             state[profile["organisation_number"]] = profile
             operations["requests"] += metric["requests"]
             operations["bytes"] += metric["bytes"]
@@ -287,6 +379,7 @@ def main() -> None:
             if index % args.checkpoint_every == 0 or index == len(pending_profiles):
                 checkpoint = [state[org] for org in orgs if org in state]
                 write_jsonl(profiles_output, checkpoint)
+                fingerprint_path.write_text(json.dumps(fingerprint, sort_keys=True), encoding="utf-8")
 
     if nav_thread is not None:
         nav_thread.join()
@@ -318,6 +411,8 @@ def main() -> None:
         "expected_count": args.expected_count,
         "emitted_envelopes": len(envelopes),
         "resumed_profiles": resumed_profiles,
+        "resume_note": resume_note,
+        "run_fingerprint": fingerprint,
         "profiles_fetched_this_run": len(pending_profiles),
         "modules": requested_modules,
         "registry": registry_metadata,

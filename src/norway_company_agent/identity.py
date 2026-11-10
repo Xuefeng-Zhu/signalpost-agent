@@ -20,6 +20,37 @@ def _tokens(value: Any) -> list[str]:
     return [token for token in re.findall(r"[a-z0-9]+", text) if token not in LEGAL_AND_GENERIC and len(token) > 1]
 
 
+_LEGAL_SUFFIX_RE = re.compile(
+    r"((?:[0-9A-Za-zÆØÅæøåÉéÜüÖöÄä&.'\-]+\s+){1,6})(AS|ASA|ANS|DA|SA|NUF|BA|KS|SUS)(?![0-9A-Za-zÆØÅæøå])"
+)
+
+
+def competing_legal_names(legal_name: Any, texts: list[Any]) -> list[str]:
+    """Legal-name phrases on the page that contain every core token of ``legal_name`` but also
+    extra distinguishing tokens (``Consto Bergen AS`` when the entity is ``Consto AS``).
+
+    Such a phrase names a *different* registered entity, so a name-only match must not be
+    treated as exact-company proof."""
+    core = _tokens(legal_name)
+    if not core:
+        return []
+    core_set = set(core)
+    found: list[str] = []
+    for text in texts:
+        for match in _LEGAL_SUFFIX_RE.finditer(str(text or "")):
+            words = match.group(1).split()
+            # shortest tail window (ending at the legal suffix) that contains every core token
+            for start in range(len(words) - 1, -1, -1):
+                window = _tokens(" ".join(words[start:]))
+                if core_set.issubset(window):
+                    if set(window) != core_set:
+                        phrase = " ".join(words[start:]) + " " + match.group(2)
+                        if phrase not in found:
+                            found.append(phrase)
+                    break
+    return found
+
+
 def _structured_names(value: Any) -> list[str]:
     names: list[str] = []
     if isinstance(value, dict):
@@ -74,6 +105,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     homepage_token_sets = [set(_tokens(part)) for part in homepage_identity_parts if part]
     exact_homepage_name = bool(core and any(set(core).issubset(tokens) for tokens in homepage_token_sets))
     substantive_homepage = len(str(value.get("main_text_excerpt") or "").strip()) >= 100
+    competing = competing_legal_names(profile.get("name"), [*homepage_identity_parts, value.get("main_text_excerpt"), rendered.get("main_text_excerpt")])
     is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I))
     if org_proof and org_proof.get("status") == "exact" and not any(marker in normalized_raw for marker in parked_markers):
         score = float(org_proof.get("score") or 0.97)
@@ -90,6 +122,9 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     elif homepage_org_hit:
         score = 1.0
         reasons.append("exact organisation number appears in homepage identity evidence")
+    elif competing:
+        score = 0.6
+        reasons.append("page names a different legal entity containing this name (" + "; ".join(competing[:3]) + ") and no organisation-number proof")
     elif len(core) >= 2 and exact_homepage_name:
         score = 0.95
         reasons.append("all normalized legal-name tokens appear together in homepage identity evidence")
@@ -114,7 +149,8 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
         "matched_tokens": overlap,
         "reasons": reasons,
         "org_number_proof": org_proof,
-        "method": "deterministic_name_org_evidence_v3",
+        "competing_legal_names": competing,
+        "method": "deterministic_name_org_evidence_v4",
     }
 
 

@@ -456,6 +456,7 @@ def _digital(b: _Builder) -> None:
             "organisation_number": "its organisation number appears on the site",
             "legal_name_and_registered_address": "its full legal name and registered address appear on the same page",
             "deterministic_name_org_evidence_v3": "it is the website declared in the register and the legal name appears on it",
+            "deterministic_name_org_evidence_v4": "it is the website declared in the register and the legal name appears on it",
         }.get(official.get("identity_method"), "it passed the exact-entity identity gate")
         lead = {"brreg_hjemmeside": "declared in the register", "brreg_email_domain": "found from the registered e-mail domain", "legal_name_domain_guess": "found from the legal name"}.get(official.get("lead_source"))
         b.say("digital_footprint", f"Official website: {official['value']}{' (' + lead + ')' if lead else ''}, verified because {method}.", [sid], [(pointer("evidence", "website", "official_website", "value"), official["value"])])
