@@ -203,7 +203,7 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
     if legal_name:
         from .identity import competing_legal_names  # local import: identity imports this module
 
-        signals["competing_legal_names"] = competing_legal_names(legal_name, [title, text[:20000]])[:5]
+        signals["competing_legal_names"] = competing_legal_names(legal_name, [title], [text[:20000]])[:5]
     return {"signals": signals, "links": links}
 
 

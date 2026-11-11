@@ -30,7 +30,7 @@ _NAME_INTRODUCERS = {"velkommen", "til", "welcome", "to", "om", "about", "kontak
                      "hos", "fra", "by", "of", "is", "er", "are", "og", "and"}
 
 
-def competing_legal_names(legal_name: Any, texts: list[Any]) -> list[str]:
+def competing_legal_names(legal_name: Any, texts: list[Any], body_texts: list[Any] | None = None) -> list[str]:
     """Find incompatible legal names, retaining prefix qualifiers and legal forms.
 
     Token inclusion alone cannot distinguish Bergen Consto AS from Consto AS, or
@@ -44,16 +44,47 @@ def competing_legal_names(legal_name: Any, texts: list[Any]) -> list[str]:
     target_matches = list(_LEGAL_SUFFIX_RE.finditer(str(legal_name or "")))
     target_form = target_matches[-1].group(2).casefold().replace("/", "") if target_matches else None
     found: list[str] = []
-    for text in texts:
+    # ``texts`` are identity statements (title, structured names, site name): prefix qualifiers count
+    # there. ``body_texts`` are flattened page text, where menus and headings run straight into the
+    # name ("HELE SAKEN Egil Ulvan Rederi AS"), so only a qualifier between the name and its legal
+    # form ("Consto Bergen AS") or a different legal form counts.
+    tagged = [(text, True) for text in texts] + [(text, False) for text in (body_texts or [])]
+    for text, allow_prefix in tagged:
         for match in _LEGAL_SUFFIX_RE.finditer(str(text or "")):
             words = match.group(1).split()
             # Trim prose introductions, but never silently discard a name qualifier
             # merely because the shortest matching tail contains the target tokens.
-            first_core = next((i for i, word in enumerate(words) if core_set.intersection(_tokens(word))), len(words))
-            start = 0
-            for i, word in enumerate(words[:first_core]):
-                if word.casefold() in _NAME_INTRODUCERS:
-                    start = i + 1
+            # The name sits directly before the legal suffix: take the shortest tail holding every core
+            # token, then add a prefix qualifier ("Bergen Consto AS"): up to two adjacent name words
+            # written in the same case style as the name itself. Prose ("utarbeidet av Insite Media AS"),
+            # file names ("png Arkitektfirma ... as"), separators and introducers end the run.
+            first_core = None
+            for i in range(len(words) - 1, -1, -1):
+                if core_set.issubset(_tokens(" ".join(words[i:]))):
+                    first_core = i
+                    break
+            if first_core is None:
+                continue
+            core_word = words[first_core].strip("'-&")
+            core_lower = core_word.islower()
+
+            def _same_case(raw: str) -> bool:
+                bare = raw.strip("'-&")
+                return bool(bare) and bare.replace("-", "").isalpha() and (bare.islower() if core_lower else bare[0].isupper())
+
+            last_core = max(i for i, word in enumerate(words) if core_set.intersection(_tokens(word)))
+            trailing = words[last_core + 1:]
+            if len(trailing) > 2 or not all(_same_case(word) for word in trailing):
+                continue  # prose ending in the word "as", not a legal name
+            start = first_core
+            while allow_prefix and start > 0 and first_core - start < 2:
+                word = words[start - 1]
+                bare = word.strip("'-&")
+                same_case = bool(bare) and (bare.islower() if core_lower else bare[0].isupper())
+                if (not same_case or not bare.replace("-", "").isalpha()
+                        or word.casefold() in _NAME_INTRODUCERS or word.endswith(("-", ":", "|"))):
+                    break
+                start -= 1
             words = words[start:]
             window = _tokens(" ".join(words))
             form = match.group(2).casefold().replace("/", "")
@@ -122,7 +153,8 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     homepage_token_sets = [set(_tokens(part)) for part in homepage_identity_parts if part]
     exact_homepage_name = bool(core and any(set(core).issubset(tokens) for tokens in homepage_token_sets))
     substantive_homepage = len(str(value.get("main_text_excerpt") or "").strip()) >= 100
-    competing = competing_legal_names(profile.get("name"), [*homepage_identity_parts, value.get("main_text_excerpt"), rendered.get("main_text_excerpt")])
+    competing = competing_legal_names(profile.get("name"), [part for part in homepage_identity_parts if part is not value.get("identity_text_excerpt")],
+                                      [value.get("identity_text_excerpt"), value.get("main_text_excerpt"), rendered.get("main_text_excerpt")])
     is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I))
     if incompatible_org_numbers:
         score = 0.5

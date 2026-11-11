@@ -1,0 +1,194 @@
+{
+  "run_id": "smoke-008",
+  "started_at": "2026-11-11T00:25:50.443586Z",
+  "completed_at": "2026-11-11T00:29:02.554530Z",
+  "expected_count": 100,
+  "emitted_envelopes": 100,
+  "resumed_profiles": 0,
+  "resume_note": null,
+  "run_fingerprint": {
+    "git_commit": "7bc5bace80b57b6c4f8ba32d12695a4efb9ccc0b",
+    "git_dirty": true,
+    "code_sha256": "5389cc7796c8883249ef51a465e357e2e30eb8bd32ec0bafcbdf6827aa62fb7f",
+    "input_sha256": "51a96f25f79532b9ba285304d540887e0f17410907909dbe6c85c0b41b8341d3",
+    "bulk_sha256": "1a4a807310926763dc77dcfcd2507c312343ddfa01a83eea86ecdb6ce56e6ded",
+    "nav_cache": {
+      "path": "/workspace/projects/5940aaa9-5aaf-4274-891c-5913c4a22306/signalpost/signalpost-starter-kit/.cache/nav-job-feed-headers.jsonl.gz",
+      "sha256": "bfb5f194a1781c6c1492eecce415d4e9de0fbe67e5d4b7175f4b7667fb258a60"
+    },
+    "modules": [
+      "accounting_obligation",
+      "financials",
+      "group",
+      "locations",
+      "nav_jobs",
+      "registry",
+      "registry_live",
+      "roles",
+      "site_signals",
+      "website"
+    ],
+    "options": {
+      "no_website_discovery": false,
+      "website_request_cap": 20,
+      "site_signals_request_cap": 8,
+      "nav_window_days": 183
+    }
+  },
+  "profiles_fetched_this_run": 100,
+  "modules": [
+    "registry",
+    "accounting_obligation",
+    "registry_live",
+    "financials",
+    "roles",
+    "group",
+    "locations",
+    "website",
+    "site_signals",
+    "nav_jobs"
+  ],
+  "registry": {
+    "missing_from_bulk_snapshot": [],
+    "registry_snapshot_sha256": "1a4a807310926763dc77dcfcd2507c312343ddfa01a83eea86ecdb6ce56e6ded",
+    "registry_rows_scanned": 1176178,
+    "requested": 100,
+    "selected": 100
+  },
+  "operations": {
+    "requests": 1432,
+    "bytes": 58010360,
+    "dns_lookups": 1044,
+    "website_requests": 858,
+    "site_signals_requests": 33,
+    "nav_detail_requests": 41,
+    "p50_ms": 774,
+    "runtime_s": 172.9,
+    "wall_s_including_bulk_scan_and_nav_sync": 192.5,
+    "third_party_cost_usd": 0,
+    "js_render": {
+      "enabled": true,
+      "available": false,
+      "checked": true,
+      "reason": "chromium launch failed: Error: BrowserType.launch: \n╔══════════════════════════════════════════════════════╗\n║ Host system is missing dependencies to r",
+      "renders": 0,
+      "failures": 0,
+      "ms": 0
+    },
+    "nav_feed_sync": {
+      "status": "synced",
+      "error": null,
+      "token_source": "nav_published_public_token",
+      "window_days": 183,
+      "headers": 87270,
+      "active_ads": 9371,
+      "pages": 2,
+      "requests": 44,
+      "bytes": 452210,
+      "cache_error": null,
+      "sync_seconds": 6.0,
+      "synced_at": "2026-11-11T00:26:14.414244Z",
+      "sync_requests": 3
+    },
+    "requests_including_shared_nav_sync": 1435,
+    "p95_ms": 2267
+  },
+  "validation": {
+    "passed": true,
+    "checks": {
+      "exact_expected_count": true,
+      "unique_organisation_numbers": true,
+      "all_entity_states_terminal": true,
+      "all_module_states_terminal": true,
+      "zero_silent_drops": true,
+      "contract_fields_present": true,
+      "all_availability_states_valid": true,
+      "synthesis_present_and_every_statement_supported": true
+    },
+    "invalid_states": []
+  },
+  "website_summary": {
+    "published_official_websites": 8,
+    "website_states": {
+      "available": 8,
+      "ambiguous": 26,
+      "not_found": 65,
+      "blocked": 1
+    },
+    "published_by_lead_source": {
+      "brreg_email_domain": 1,
+      "brreg_hjemmeside": 2,
+      "legal_name_domain_guess": 5
+    },
+    "published_by_identity_method": {
+      "legal_name_and_registered_address": 2,
+      "deterministic_name_org_evidence_v4": 2,
+      "organisation_number": 4
+    }
+  },
+  "signal_summary": {
+    "site_signals": {
+      "states": {
+        "blocked": 1,
+        "not_applicable": 92,
+        "available": 7
+      },
+      "companies_with": {
+        "phones": 3,
+        "business_description": 7,
+        "news_posts": 4,
+        "dated_news_posts": 4,
+        "emails": 3,
+        "social_profiles": 3
+      },
+      "facts": {
+        "phones": 3,
+        "business_description": 7,
+        "news_posts": 29,
+        "dated_news_posts": 29,
+        "emails": 4,
+        "social_profiles": 7
+      }
+    },
+    "nav_jobs": {
+      "states": {
+        "not_found": 100
+      },
+      "companies_with_postings": 0,
+      "postings": 0,
+      "candidates_rejected_by_orgnr_gate": 40
+    },
+    "companies_with_any_job_posting": 0
+  },
+  "refresh_and_synthesis": {
+    "previous_snapshot": {
+      "path": "out/smoke6/envelopes.jsonl",
+      "sha256": "da14c2a545f0fe757e70e0f68b9a92825c9f8f364063c3e3a426dc8d4415693b"
+    },
+    "companies_compared": 100,
+    "companies_with_changes": 0,
+    "changes": 0,
+    "fields_changed": {},
+    "non_material_refresh_failures": 0,
+    "synthesis": {
+      "method": "evidence_template_synthesis_v1",
+      "companies_failed": 0,
+      "statements_published": 1152,
+      "statements_dropped_by_support_check": 0,
+      "min_statements_per_company": 10,
+      "companies_with_unknowns": 100,
+      "llm_polish": {
+        "configured": false,
+        "accepted": 0,
+        "rejected": 0,
+        "failed": 0
+      },
+      "runtime_ms": 105
+    }
+  },
+  "site": {
+    "index": "out/smoke8/site/index.html",
+    "companies": 100,
+    "bytes": 1518571
+  }
+}

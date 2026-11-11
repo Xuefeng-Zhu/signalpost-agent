@@ -83,3 +83,38 @@ def test_registered_address_proof_without_contradictions_remains_exact():
     proof = assess_org_proof([page(owner, "<body>CONSTO AS, Strandgaten 1, 5003 Bergen</body>")])
     assert proof["publishable"]
     assert proof["proof"] == "legal_name_and_registered_address"
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("name,text", [
+    ("INSITE MEDIA AS", "Nettsiden er utarbeidet av Insite Media AS"),
+    ("ARKITEKTFIRMA JON VIKØREN AS", "logo.png Arkitektfirma Jon Vikøren as"),
+    ("BRANDMAKER AS", "Du finner Brandmaker Midt på Torvall menningen Brandmaker AS"),
+    ("REVISOR-PARTNER AS", "Regnskap for din bedrift - Revisor-Partner AS"),
+    ("EGIL ULVAN REDERI AS", "Om oss Egil Ulvan Rederi AS"),
+])
+def test_prose_before_exact_name_is_not_a_competing_entity(name, text):
+    from norway_company_agent.identity import competing_legal_names
+
+    assert competing_legal_names(name, [text]) == []
+
+
+@_pytest.mark.parametrize("name,text", [
+    ("EGIL ULVAN REDERI AS", "HELE SAKEN Egil Ulvan Rederi AS Fjordgata 50"),
+    ("STAVRUM BYGG AS", "Sec-CH-UA-Model Stavrum Bygg AS"),
+    ("ACCESS OSLO AS", "Access Oslo team since its beginning and serves as a guide"),
+    ("WILCOM AS", "Renholdsavdeling Wilcom AS"),
+])
+def test_menu_text_before_name_in_body_is_not_a_competing_entity(name, text):
+    from norway_company_agent.identity import competing_legal_names
+
+    assert competing_legal_names(name, [], [text]) == []
+
+
+def test_body_still_catches_inner_qualifier_and_other_form():
+    from norway_company_agent.identity import competing_legal_names
+
+    assert competing_legal_names("CONSTO AS", [], ["Kontakt Consto Bergen AS i dag"]) == ["Consto Bergen AS"]
+    assert competing_legal_names("CONSTO AS", [], ["Om oss: CONSTO ASA"]) == ["CONSTO ASA"]
