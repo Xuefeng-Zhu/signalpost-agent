@@ -264,6 +264,7 @@ def slim(profile: dict, dataset: str, envelope: dict | None = None) -> dict:
         "fin": fin_rows,
         "syn": {
             "headline": synthesis.get("headline"),
+            "overview": (synthesis.get("overview") or {}).get("text"),
             "sections": [{"t": sec["title"], "k": sec["key"], "st": [{"x": statements[i]["text"], "c": statements[i]["citations"]} for i in sec["statement_ids"] if i in statements]} for sec in synthesis.get("sections") or []],
             "sources": [{k: s.get(k) for k in ("id", "label", "source_url", "retrieved_at", "source_class", "claim_span", "content_sha256")} for s in synthesis.get("sources") or []],
             "unknowns": [({"l": u.get("label"), "s": u.get("state"), "r": u.get("reason")} if isinstance(u, dict) else {"l": str(u), "s": "unknown", "r": None}) for u in unknowns],

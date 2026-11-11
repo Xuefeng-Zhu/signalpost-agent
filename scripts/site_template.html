@@ -288,7 +288,7 @@ function renderCompany(org) {
   <section class="panel syn" id="summary" aria-labelledby="sum-h">
     <h2 id="sum-h">Summary</h2>
     <p class="muted small" style="margin-top:-4px">Generated only from the evidence below (${esc(syn.method || "")}; ${esc(syn.checked ?? 0)} statements, each checked against its cited sources). Tap a citation to see its source.</p>
-    ${syn.narrative ? `<div class="sec"><h3>Overview</h3><p>${citeify(syn.narrative)}</p></div>` : ""}
+    ${syn.narrative ? `<div class="sec"><h3>Overview</h3><p>${citeify(syn.narrative)}</p></div>` : (syn.overview ? `<div class="sec overview"><h3>At a glance</h3><p>${citeify(syn.overview)}</p></div>` : "")}
     ${(syn.sections || []).map(s => `<div class="sec"><h3>${esc(s.t)}</h3>${s.st.map(st => `<p>${esc(st.x)}${st.c.map(id => citeBtn(id)).join("")}</p>`).join("")}</div>`).join("")}
   </section>
 
@@ -358,6 +358,8 @@ function renderCompare(a, b) {
     ["Net result", c => c.res !== null && c.res !== undefined ? esc(money(c.res)) : '<span class="muted">not reported</span>'],
     ["Equity", c => c.eq !== null && c.eq !== undefined ? esc(money(c.eq)) : '<span class="muted">not reported</span>'],
     ["Total assets", c => c.assets !== null && c.assets !== undefined ? esc(money(c.assets)) : '<span class="muted">not reported</span>'],
+    ["Operating margin (derived)", c => typeof c.rev === "number" && c.rev > 0 && typeof c.op === "number" ? esc((c.op / c.rev * 100).toFixed(1) + " %") : '<span class="muted">not computable</span>'],
+    ["Equity ratio (derived)", c => typeof c.eq === "number" && typeof c.assets === "number" && c.assets > 0 ? esc((c.eq / c.assets * 100).toFixed(1) + " %") : '<span class="muted">not computable</span>'],
     ["Managing director", c => c.dagl ? esc(c.dagl) : '<span class="muted">none registered</span>'],
     ["Chair of the board", c => c.chair ? esc(c.chair) : '<span class="muted">none registered</span>'],
     ["Registered workplaces", c => c.subunits === null || c.subunits === undefined ? chip("failed") : esc(c.subunits)],

@@ -24,7 +24,7 @@ from typing import Any
 
 from .registry_state import registry_field, registry_boolean
 
-SYNTHESIS_VERSION = "evidence_template_synthesis_v3"
+SYNTHESIS_VERSION = "evidence_template_synthesis_v4"
 
 AVAILABILITY = {
     "available": "available",
@@ -43,6 +43,14 @@ LEGAL_FORMS = {
     "NUF": "Norwegian branch of a foreign company (NUF)", "STI": "foundation (stiftelse)",
     "KS": "limited partnership (kommandittselskap)", "BRL": "housing cooperative (borettslag)",
     "SPA": "savings bank (sparebank)", "FLI": "association (forening/lag/innretning)",
+    "ESEK": "owner-section condominium (eierseksjonssameie)", "SAM": "co-ownership (tingsrettslig sameie)",
+    "BA": "company with limited liability (selskap med begrenset ansvar)", "KF": "municipal enterprise (kommunalt foretak)",
+    "IKS": "inter-municipal company (interkommunalt selskap)", "KOMM": "municipality (kommune)",
+    "ORGL": "organisational unit (organisasjonsledd)", "PK": "pension fund (pensjonskasse)",
+    "STAT": "state body (staten)", "SF": "state enterprise (statsforetak)", "KIRK": "Church of Norway body (Den norske kirke)",
+    "BBL": "housing builder cooperative (boligbyggelag)", "PRE": "shipping partnership (partsrederi)",
+    "GFS": "mutual insurance company (gjensidig forsikringsselskap)", "OPMV": "VAT-registered unit (særskilt oppdelt enhet)",
+    "ADOS": "administrative unit of a public body", "UTLA": "foreign entity (utenlandsk enhet)",
 }
 
 ROLE_LABELS = {
@@ -246,7 +254,8 @@ def _identity(b: _Builder) -> None:
         facts = [(np, name["value"]), (pointer("organisation_number"), p.get("organisation_number"))]
         cites = [ns]
         if fs:
-            text += " is a " + LEGAL_FORMS.get(form["value"], str(form["value"]))
+            label = LEGAL_FORMS.get(form["value"])
+            text += (" is " + ("an " if label[:1].lower() in "aeiou" else "a ") + label) if label else f" is registered with legal form code {form['value']}"
             facts.append((fp, form["value"]))
             cites.append(fs)
         if name["fallback"] or form["fallback"]:
@@ -357,6 +366,93 @@ def _financials(b: _Builder) -> None:
         gbase = pointer("evidence", "financials", "value", "records", gi)
         if g.get("revenue") is not None:
             b.say("financials", f"Consolidated group accounts are also filed: group revenue {_nok(g['revenue'], g.get('currency'))} for the period ending {(g.get('period') or {}).get('tilDato')}.", [sid], [(gbase + pointer("revenue"), g["revenue"]), (gbase + pointer("period", "tilDato"), (g.get("period") or {}).get("tilDato"))])
+
+
+def _months_between(start: str, end: str) -> int | None:
+    m1 = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(start or ""))
+    m2 = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(end or ""))
+    if not m1 or not m2:
+        return None
+    y1, mo1, d1 = map(int, m1.groups())
+    y2, mo2, d2 = map(int, m2.groups())
+    return (y2 - y1) * 12 + (mo2 - mo1) - (1 if d2 < d1 else 0)
+
+
+def _signals(b: _Builder) -> None:
+    """Decision signals: a few derived readings of the cited filings and register flags.
+
+    Every number is either copied from a cited fact or a declared derived value (ratio_pct /
+    pct_change) that the validator recomputes. Wording is qualitative only where the inputs'
+    signs decide it (loss, negative equity). Nothing here is a forecast or a rating.
+    """
+    p = b.profile
+    flags = []
+    for field in ("bankrupt", "liquidating", "forced_dissolution"):
+        item = registry_field(p, field)
+        if item["module"] is None or item["fallback"]:
+            flags = None
+            break
+        flags.append((field, item))
+    if flags and all(registry_boolean(item["value"]) is False for _, item in flags):
+        label = "Brønnøysund entity register (live API)"
+        cites, facts = [], []
+        for _, item in flags:
+            cites.append(b.source(label, pointer("evidence", item["module"]), item["record"]))
+            facts.append((pointer("evidence", item["module"], "value", item["key"]), item["value"]))
+        b.say("key_signals", "Status: the live register shows no bankruptcy, liquidation or forced-dissolution flag.", cites, facts)
+    fin = _ev(p, "financials")
+    records = ((fin.get("value") or {}).get("records") or []) if fin.get("status") == "available" else []
+    company = [(i, r) for i, r in enumerate(records) if r.get("account_type") == "SELSKAP"]
+    if not company:
+        return
+    company.sort(key=lambda item: str((item[1].get("period") or {}).get("tilDato") or ""), reverse=True)
+    sid = b.source("Brønnøysund Register of Company Accounts (annual accounts API)", pointer("evidence", "financials"), fin)
+    i, latest = company[0]
+    base = pointer("evidence", "financials", "value", "records", i)
+    end = (latest.get("period") or {}).get("tilDato")
+    end_fact = (base + pointer("period", "tilDato"), end)
+    revenue, operating, result = latest.get("revenue"), latest.get("operating_result"), latest.get("annual_result")
+    equity, assets = latest.get("equity"), latest.get("assets")
+    if isinstance(revenue, (int, float)) and revenue > 0 and isinstance(operating, (int, float)):
+        pct = round(operating / revenue * 100, 1)
+        b.say("key_signals", f"Operating margin: {pct}% of revenue (operating result ÷ revenue) for the period ending {end}.", [sid],
+              [(base + pointer("operating_result"), operating), (base + pointer("revenue"), revenue), end_fact],
+              [{"op": "ratio_pct", "inputs": [base + pointer("operating_result"), base + pointer("revenue")], "value": pct}])
+    if isinstance(equity, (int, float)) and isinstance(assets, (int, float)) and assets > 0:
+        pct = round(equity / assets * 100, 1)
+        text = f"Equity ratio: {pct}% (equity ÷ total assets) for the period ending {end}"
+        if equity < 0:
+            text += "; equity is negative, so recorded debts exceed recorded assets"
+        elif pct < 10:
+            text += "; most of the balance sheet is financed by debt"
+        b.say("key_signals", text + ".", [sid], [(base + pointer("equity"), equity), (base + pointer("assets"), assets), end_fact],
+              [{"op": "ratio_pct", "inputs": [base + pointer("equity"), base + pointer("assets")], "value": pct}])
+    if len(company) > 1 and isinstance(result, (int, float)):
+        j, prior = company[1]
+        before = prior.get("annual_result")
+        pend = (prior.get("period") or {}).get("tilDato")
+        pbase = pointer("evidence", "financials", "value", "records", j)
+        if isinstance(before, (int, float)):
+            if result < 0 and before < 0:
+                reading = "net losses in both of the two latest filed years"
+            elif result > 0 and before > 0:
+                reading = "a net profit in both of the two latest filed years"
+            elif result == 0 or before == 0:
+                reading = "a break-even result in at least one of the two latest filed years"
+            elif result < 0:
+                reading = "a net loss in the latest filed year, after a profit the year before"
+            else:
+                reading = "a net profit in the latest filed year, after a loss the year before"
+            b.say("key_signals", f"Profitability: {reading} (periods ending {pend} and {end}).", [sid],
+                  [(base + pointer("annual_result"), result), (pbase + pointer("annual_result"), before), end_fact, (pbase + pointer("period", "tilDato"), pend)])
+    elif isinstance(result, (int, float)):
+        reading = "a net loss" if result < 0 else ("a net profit" if result > 0 else "a break-even result")
+        b.say("key_signals", f"Profitability: {reading} in the latest filed year (period ending {end}).", [sid], [(base + pointer("annual_result"), result), end_fact])
+    checked = fin.get("retrieved_at")
+    gap = _months_between(end, checked)
+    if gap is not None and gap > 18:
+        b.say("key_signals", f"Filing recency: the newest filed accounts end on {end}, more than a year and a half before they were checked ({str(checked)[:10]}), so the figures may be out of date.", [sid],
+              [end_fact, (pointer("evidence", "financials", "retrieved_at"), checked)])
 
 
 def _people(b: _Builder) -> None:
@@ -684,9 +780,9 @@ def _sentence_case(text: str) -> str:
     return text[:1].upper() + text[1:] if text else text
 
 
-SECTION_ORDER = ["what_it_does", "size", "financials", "people", "locations", "digital_footprint", "hiring", "recent_activity", "what_changed"]
+SECTION_ORDER = ["what_it_does", "key_signals", "size", "financials", "people", "locations", "digital_footprint", "hiring", "recent_activity", "what_changed"]
 SECTION_TITLES = {
-    "what_it_does": "What the company does", "size": "Size", "financials": "Financial snapshot", "people": "People",
+    "what_it_does": "What the company does", "key_signals": "Key signals", "size": "Size", "financials": "Financial snapshot", "people": "People",
     "locations": "Locations and group", "digital_footprint": "Digital footprint", "hiring": "Hiring",
     "recent_activity": "Recent public activity", "what_changed": "What changed",
 }
@@ -698,6 +794,7 @@ def _template_statements(profile: dict[str, Any], changes: list[dict] | None = N
     _identity(b)
     _description(b)
     _financials(b)
+    _signals(b)
     _people(b)
     _locations(b)
     _digital(b)
@@ -721,12 +818,20 @@ def build_synthesis(profile: dict[str, Any], *, changes: list[dict] | None = Non
     headline_parts = [s for s in statements if s["section"] == "what_it_does"][:1]
     summary = " ".join(f"{s['text']} " + "".join(f"[{c}]" for c in s["citations"]) for s in statements if s["section"] not in ("what_changed",))
     summary += " " + change_summary["text"]
+    overview_ids: list[str] = []
+    for key, limit in (("what_it_does", 1), ("size", 1), ("key_signals", 4), ("hiring", 1), ("recent_activity", 1)):
+        overview_ids += [st["id"] for st in statements if st["section"] == key][:limit]
     unknown_text = ("Not found or not verifiable: " + "; ".join(f"{u['label'].lower()} ({u['state'].replace('_', ' ')})" for u in unknowns) + ".") if unknowns else "Every tracked information type has supported evidence."
     return {
         "method": SYNTHESIS_VERSION,
         "language": "en",
         "headline": (headline_parts[0]["text"] + " " + "".join(f"[{c}]" for c in headline_parts[0]["citations"])) if headline_parts else None,
         "summary": summary.strip(),
+        "overview": {
+            "statement_ids": overview_ids,
+            "text": " ".join(f"{st['text']} " + "".join(f"[{c}]" for c in st["citations"]) for st in statements if st["id"] in overview_ids).strip(),
+            "rule": "verbatim selection of supported statements: identity, size, key signals, hiring and latest activity",
+        },
         "statements": statements,
         "sections": sections,
         "what_changed": change_summary,
@@ -820,7 +925,9 @@ def validate_synthesis(synthesis: dict[str, Any], profile: dict[str, Any]) -> di
         for d in s.get("derived") or []:
             try:
                 a, bval = (resolve_pointer(profile, p) for p in d["inputs"])
-                if d["op"] == "pct_change" and round((a - bval) / bval * 100, 1) == d["value"]:
+                if d["op"] == "ratio_pct" and bval and round(a / bval * 100, 1) == d["value"]:
+                    allowed |= _value_tokens(float(d["value"])) | {str(d["value"]), str(abs(d["value"]))}
+                elif d["op"] == "pct_change" and round((a - bval) / bval * 100, 1) == d["value"]:
                     allowed |= _value_tokens(float(d["value"])) | {str(d["value"]), str(abs(d["value"]))}
                 elif d["op"] in ("set_added", "set_removed"):
                     o, n = set(map(str, a or [])), set(map(str, bval or []))
@@ -840,6 +947,13 @@ def validate_synthesis(synthesis: dict[str, Any], profile: dict[str, Any]) -> di
                 problems.append(f"unsupported number {token}")
         if problems:
             failures.append({"id": s.get("id"), "problems": problems[:5]})
+    overview = synthesis.get("overview")
+    if overview is not None:
+        published = {st.get("id"): st for st in synthesis.get("statements") or [] if st.get("id") not in {f["id"] for f in failures}}
+        ids = overview.get("statement_ids") or []
+        rebuilt = " ".join(f"{published[i]['text']} " + "".join(f"[{c}]" for c in published[i]["citations"]) for i in ids if i in published).strip()
+        if any(i not in published for i in ids) or overview.get("text") != rebuilt:
+            failures.append({"id": None, "problems": ["overview is not a verbatim selection of supported statements"]})
     polish = synthesis.get("llm_polish") or {}
     if polish.get("narrative") is not None:
         problems = check_narrative(polish["narrative"], synthesis)
