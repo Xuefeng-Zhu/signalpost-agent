@@ -76,7 +76,12 @@ p,li,dd,td,.meta,.span{overflow-wrap:anywhere}
 .cite{font:inherit;font-size:11px;font-weight:700;vertical-align:super;line-height:1;border:1px solid var(--line);background:var(--na-bg);color:var(--accent);border-radius:6px;padding:2px 4px;margin-left:2px;cursor:pointer}
 .sources ol{padding-left:22px;margin:0}
 .sources li{margin:0 0 10px;overflow-wrap:anywhere;border-radius:8px;padding:4px 6px}
-.sources li.flash{background:var(--warn-bg)}
+.sources li.flash{background:var(--warn-bg);outline:2px solid var(--accent);outline-offset:2px;transition:background .3s}
+.citepop{position:absolute;z-index:30;max-width:min(420px,92vw);background:var(--panel);color:inherit;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:10px 12px;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.citepop .row2{display:flex;gap:8px;margin-top:8px}.citepop button{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--na-bg);border-radius:6px;padding:4px 8px;cursor:pointer}
+.suggest{position:relative}.suggest ul{position:absolute;left:0;right:0;top:100%;z-index:25;margin:2px 0 0;padding:4px 0;list-style:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.14);max-height:300px;overflow:auto}
+.suggest li button{display:block;width:100%;text-align:left;font:inherit;font-size:14px;background:none;border:0;padding:10px 12px;cursor:pointer;color:inherit}.suggest li button:hover,.suggest li button:focus{background:var(--na-bg)}
+.toc{display:flex;gap:6px;flex-wrap:wrap}
 .span{display:block;font-size:13px;color:var(--muted);border-left:3px solid var(--line);padding-left:8px;margin-top:4px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;vertical-align:top;padding:8px;border-top:1px solid var(--line);overflow-wrap:anywhere}
@@ -112,6 +117,9 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 32px;color:var(--muted);fon
   .cmp td{display:block;border:0;padding:0;width:auto!important}
   .cmp td:first-child{grid-column:1/-1;font-size:13px;color:var(--muted)}
   .top nav a{padding:6px 8px}
+  .toc{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+  .toc button{flex:0 0 auto;min-height:40px}
+  .cite{padding:4px 6px;font-size:12px}
 }
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 </style>
@@ -152,7 +160,7 @@ const srcLink = (src, text) => {
   const label = text || host(src.url);
   return `${u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>` : esc(label)}<span class="muted small"> · retrieved ${esc(fmtAt(src.at) || "date not reported")}${src.period ? ` · period ${esc(src.period)}` : ""}${src.changed ? ` · changed ${esc(src.changed)}` : ""}</span>${src.span ? `<span class="span">“${esc(src.span)}”</span>` : ""}`;
 };
-const norm = s => String(s || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+const norm = s => String(s || "").toLowerCase().replace(/ø/g, "o").replace(/æ/g, "ae").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
 const digits = s => String(s || "").replace(/\D/g, "");
 
 function setNav(name) {
@@ -287,7 +295,7 @@ function renderCompany(org) {
 
   <section class="panel syn" id="summary" aria-labelledby="sum-h">
     <h2 id="sum-h">Summary</h2>
-    <p class="muted small" style="margin-top:-4px">Generated only from the evidence below (${esc(syn.method || "")}; ${esc(syn.checked ?? 0)} statements, each checked against its cited sources). Tap a citation to see its source.</p>
+    <p class="muted small" style="margin-top:-4px">Generated only from the evidence below (${esc(syn.method || "")}; ${esc(syn.checked ?? 0)} statements, each checked against its cited sources). Tap a citation to see where that fact came from and when it was read.</p>
     ${syn.narrative ? `<div class="sec"><h3>Overview</h3><p>${citeify(syn.narrative)}</p></div>` : (syn.overview ? `<div class="sec overview"><h3>At a glance</h3><p>${citeify(syn.overview)}</p></div>` : "")}
     ${(syn.sections || []).map(s => `<div class="sec"><h3>${esc(s.t)}</h3>${s.st.map(st => `<p>${esc(st.x)}${st.c.map(id => citeBtn(id)).join("")}</p>`).join("")}</div>`).join("")}
   </section>
@@ -323,18 +331,41 @@ function renderCompany(org) {
     <ol>${(syn.sources || []).map(s => `<li id="src-${esc(s.id)}" tabindex="-1"><strong>[${esc(s.id)}] ${esc(s.label)}</strong><br>${safeUrl(s.source_url) ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(s.source_url)}</a>` : esc(s.source_url)}<div class="muted small">retrieved ${esc(fmtAt(s.retrieved_at) || "—")} · ${esc(s.source_class || "")}${s.content_sha256 ? ` · sha256 ${esc(s.content_sha256.slice(0, 12))}…` : ""}</div>${s.claim_span ? `<span class="span">“${esc(s.claim_span)}”</span>` : ""}</li>`).join("")}</ol>
   </section>`;
   main.querySelectorAll("[data-jump]").forEach(b => b.onclick = () => { const t = document.getElementById(b.dataset.jump); t.scrollIntoView({behavior: "smooth", block: "start"}); t.setAttribute("tabindex", "-1"); t.focus({preventScroll: true}); });
-  main.querySelectorAll("[data-cite]").forEach(b => b.onclick = () => jumpCite(b.dataset.cite));
+  main.querySelectorAll("[data-cite]").forEach(b => { b.setAttribute("aria-haspopup", "dialog"); b.setAttribute("aria-expanded", "false"); b.onclick = () => showCite(b, b.dataset.cite); });
   main.querySelectorAll("[data-pick]").forEach(btn => btn.onclick = () => togglePick(btn.dataset.pick));
   window.scrollTo(0, 0);
 }
 function citeBtn(id) { return `<button type="button" class="cite" data-cite="${esc(id)}" aria-label="Source ${esc(id)}">${esc(id)}</button>`; }
 function citeify(text) { return esc(text).replace(/\[(S\d+)\]/g, (_, id) => citeBtn(id)); }
+function closeCitePop() { const p = document.querySelector(".citepop"); if (p) { const b = p._btn; p.remove(); if (b) b.setAttribute("aria-expanded", "false"); } }
+function showCite(btn, id) {
+  const open = document.querySelector(".citepop");
+  const same = open && open._btn === btn;
+  closeCitePop();
+  if (same) return;
+  const li = document.getElementById(`src-${id}`);
+  if (!li) return;
+  const pop = document.createElement("div");
+  pop.className = "citepop"; pop.setAttribute("role", "dialog"); pop.setAttribute("aria-label", `Source ${id}`); pop._btn = btn;
+  pop.innerHTML = `<div>${li.innerHTML}</div><div class="row2"><button type="button" data-go>Show in source list</button><button type="button" data-x>Close</button></div>`;
+  document.body.appendChild(pop);
+  const r = btn.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.scrollX + r.left, window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8));
+  pop.style.left = left + "px"; pop.style.top = (window.scrollY + r.bottom + 6) + "px";
+  btn.setAttribute("aria-expanded", "true");
+  pop.querySelector("[data-go]").onclick = () => { closeCitePop(); jumpCite(id); };
+  pop.querySelector("[data-x]").onclick = () => { closeCitePop(); btn.focus(); };
+  pop.querySelector("[data-x]").focus({preventScroll: true});
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeCitePop(); });
+document.addEventListener("click", e => { if (!e.target.closest(".citepop") && !e.target.closest("[data-cite]")) closeCitePop(); });
+window.addEventListener("hashchange", closeCitePop);
 function jumpCite(id) {
   const li = document.getElementById(`src-${id}`);
   if (!li) return;
   li.scrollIntoView({behavior: "smooth", block: "center"});
-  li.classList.add("flash"); li.focus({preventScroll: true});
-  setTimeout(() => li.classList.remove("flash"), 1600);
+  document.querySelectorAll(".sources li.flash").forEach(x => x.classList.remove("flash"));
+  li.classList.add("flash"); li.setAttribute("tabindex", "-1"); li.focus({preventScroll: true});
 }
 
 /* ---------- compare ---------- */
@@ -342,7 +373,6 @@ function renderCompare(a, b) {
   setNav("compare");
   document.title = "Compare companies · Signalpost";
   const A = BY[a], B = BY[b];
-  const opts = C.map(c => `<option value="${esc(c.name)} · ${c.org}"></option>`).join("");
   const cell = (c, fn) => c ? fn(c) : '<span class="muted">—</span>';
   const fact = (c, group, labelStart) => { const f = c.facts.find(x => x.g === group && x.l.startsWith(labelStart)); return f ? `${valueHtml(f)} ${f.s !== "available" ? chip(f.s) : ""}<span class="src small">${srcLink(f.src)}</span>` : chip("not_available"); };
   const rows = [
@@ -374,23 +404,51 @@ function renderCompare(a, b) {
   <section class="panel" aria-labelledby="cmp-h">
     <h1 id="cmp-h">Compare two companies</h1>
     <div class="cmp-pick">
-      <div><label class="small muted" for="ca"><strong>Company A</strong></label><input id="ca" type="text" list="all" autocomplete="off" placeholder="Type a name or org. no." value="${A ? esc(`${A.name} · ${A.org}`) : ""}"></div>
-      <div><label class="small muted" for="cb"><strong>Company B</strong></label><input id="cb" type="text" list="all" autocomplete="off" placeholder="Type a name or org. no." value="${B ? esc(`${B.name} · ${B.org}`) : ""}"></div>
+      <div class="suggest"><label class="small muted" for="ca"><strong>Company A</strong></label><input id="ca" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="ca-list" autocomplete="off" placeholder="Type a name or org. no." value="${A ? esc(`${A.name} · ${A.org}`) : ""}"></div>
+      <div class="suggest"><label class="small muted" for="cb"><strong>Company B</strong></label><input id="cb" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="cb-list" autocomplete="off" placeholder="Type a name or org. no." value="${B ? esc(`${B.name} · ${B.org}`) : ""}"></div>
     </div>
-    <datalist id="all">${opts}</datalist>
   </section>
   ${A || B ? `<section class="panel" aria-label="Comparison"><table class="cmp"><thead><tr><th scope="col">Field</th><th scope="col">${A ? `<a href="#/c/${A.org}">${esc(A.name)}</a>` : "A"}</th><th scope="col">${B ? `<a href="#/c/${B.org}">${esc(B.name)}</a>` : "B"}</th></tr></thead><tbody>
     <tr class="names"><td>Company</td><td>${A ? `<a href="#/c/${A.org}">${esc(A.name)}</a>` : "—"}</td><td>${B ? `<a href="#/c/${B.org}">${esc(B.name)}</a>` : "—"}</td></tr>
     ${rows.map(([l, fn]) => `<tr><td>${esc(l)}</td><td>${cell(A, fn)}</td><td>${cell(B, fn)}</td></tr>`).join("")}
   </tbody></table><p class="muted small">Values come from each company's profile; open a company to see every source.</p></section>` : `<div class="panel empty">Pick two companies above, or use “Compare” on the company list.</div>`}`;
-  const pick = (input, idx) => input.addEventListener("change", () => {
-    const m = digits(input.value).slice(-9);
-    const org = BY[m] ? m : (C.find(c => norm(c.name) === norm(input.value)) || {}).org;
-    if (!org) return;
+  const choose = (org, idx) => {
     const cur = [a || "-", b || "-"]; cur[idx] = org;
     state.pick = cur.filter(x => x !== "-");
     location.hash = `#/compare/${cur.join("/")}`;
-  });
+  };
+  const matches = q => {
+    const d = digits(q), n = norm(q).trim();
+    if (!n) return [];
+    return C.filter(c => (d.length >= 3 && c.org.startsWith(d)) || norm(c.name).includes(n)).slice(0, 8);
+  };
+  const pick = (input, idx) => {
+    const list = document.createElement("ul");
+    list.id = input.id + "-list"; list.setAttribute("role", "listbox"); list.hidden = true;
+    input.after(list);
+    const hide = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); };
+    const show = () => {
+      const m = matches(input.value);
+      list.innerHTML = m.length ? m.map(c => `<li role="option"><button type="button" data-org="${c.org}">${esc(c.name)} <span class="muted small">${esc(c.org)} · ${esc(c.city || "")}</span></button></li>`).join("")
+        : (norm(input.value).trim() ? `<li class="muted small" style="padding:8px 12px">No company in this set matches.</li>` : "");
+      list.hidden = !list.innerHTML; input.setAttribute("aria-expanded", String(!list.hidden));
+      list.querySelectorAll("[data-org]").forEach(btn => btn.onclick = () => choose(btn.dataset.org, idx));
+    };
+    input.addEventListener("input", show);
+    input.addEventListener("focus", () => { if (input.value && !BY[digits(input.value).slice(-9)]) show(); });
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") { const m = matches(input.value); if (m.length) { e.preventDefault(); choose(m[0].org, idx); } }
+      else if (e.key === "ArrowDown") { const f = list.querySelector("button"); if (f) { e.preventDefault(); f.focus(); } }
+      else if (e.key === "Escape") hide();
+    });
+    list.addEventListener("keydown", e => {
+      const items = [...list.querySelectorAll("button")], i = items.indexOf(document.activeElement);
+      if (e.key === "ArrowDown" && i < items.length - 1) { e.preventDefault(); items[i + 1].focus(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); (i > 0 ? items[i - 1] : input).focus(); }
+      else if (e.key === "Escape") { hide(); input.focus(); }
+    });
+    input.addEventListener("blur", () => setTimeout(() => { if (!list.contains(document.activeElement)) hide(); }, 150));
+  };
   pick(document.getElementById("ca"), 0); pick(document.getElementById("cb"), 1);
 }
 

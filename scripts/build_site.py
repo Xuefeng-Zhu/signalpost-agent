@@ -43,10 +43,15 @@ def _src(record: dict | None, **extra: Any) -> dict:
     return out
 
 
+FRIENDLY_NOTES = {
+    "No available, entity-matched registry value.": "not in the register for this organisation number",
+}
+
+
 def fact(group: str, label: str, value: Any, state: str, source: dict | None, note: str | None = None) -> dict:
     item = {"g": group, "l": label, "v": value, "s": state, "src": source}
     if note:
-        item["n"] = note
+        item["n"] = FRIENDLY_NOTES.get(note, note)
     return item
 
 
