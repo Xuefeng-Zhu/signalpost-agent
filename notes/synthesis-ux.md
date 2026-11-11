@@ -16,7 +16,7 @@
 - Our choice, given that gap: a top-level `synthesis` object in every envelope (it is also kept in the
   profiles JSONL), plus top-level `changes` and `refresh` objects. UX is a static site built from the same files.
 
-## Synthesis: `src/norway_company_agent/synthesis.py` (`evidence_template_synthesis_v1`)
+## Synthesis: `src/norway_company_agent/synthesis.py` (`evidence_template_synthesis_v2`)
 Deterministic, template-based, keyless. It runs as post-processing in the batch command
 (`attach_refresh_and_synthesis`): about 0.8–1.1 ms per company (77 ms for smoke-004 and about 110 ms for
 ops-002, per 100 companies), with no network.
@@ -50,23 +50,26 @@ Envelope `synthesis` fields:
 
 **Support check** (`validate_synthesis`, also run by `validate_envelopes` as
 `synthesis_present_and_every_statement_supported`):
-1. Each statement has ≥1 citation, and each citation id exists.
-2. Each cited URL appears in the profile's evidence.
-3. Each fact pointer resolves to exactly the stated value. Projections (id lists, group subsets) must be
-   token-subsets of the record.
-4. Every number written in the text is one of the cited fact values or a recomputed derived value
-   (pct_change, set_added/set_removed).
-A statement that fails is dropped before publication and listed in `validation.dropped`. smoke-004 and ops-002:
-0 dropped. The tests prove that a changed digit, an unknown citation or a wrong pointer value fails.
+1. Each published statement exactly matches its fixed template regenerated from the profile,
+   including its text, section, facts, derived values, and citation bindings. This prevents a
+   fabricated predicate from passing just because it reuses a known name or number.
+2. Source IDs, evidence pointers, URLs, timestamps, hashes, class and claim spans must match
+   their regenerated source records. Shared URLs alone do not bind facts to a source.
+3. Fact pointers and values are rechecked, as are numeric values and derived calculations.
+   Projections must match the specific template's projection, not merely numeric token subsets.
+4. Any stored LLM narrative is checked again before envelope validation passes.
+A failing statement is omitted and recorded in `validation.dropped`. This is a closed-template
+integrity check. It is not a general semantic entailment system and cannot independently establish
+that the upstream source or extractor is correct.
 
-**Optional LLM polish** (`polish_with_llm`): it runs only if `SIGNALPOST_LLM_API_KEY` is set (OpenAI-compatible
-`/chat/completions`; `SIGNALPOST_LLM_BASE_URL`, `SIGNALPOST_LLM_MODEL` [default gpt-4o-mini],
-`SIGNALPOST_LLM_TIMEOUT_S`). `--no-llm-synthesis` disables it. The model sees only the checked statements and the
-unknowns text. The post-check (`check_narrative`) rejects the narrative if any sentence lacks `[S#]`, cites an
-unknown id, uses a number that is not in the cited statements, or uses a capitalised name that is not in them.
-A rejected narrative is dropped (`rejected_by_post_check`). The template statements always stay the published
-synthesis. **Not exercised live** (no key here). It is tested with a fake transport (accepted / invented
-number / uncited / invented name).
+**Optional LLM selection** (`polish_with_llm`): runs only if `SIGNALPOST_LLM_API_KEY` is set
+(OpenAI-compatible `/chat/completions`; `SIGNALPOST_LLM_BASE_URL`, `SIGNALPOST_LLM_MODEL`
+[default gpt-4o-mini], `SIGNALPOST_LLM_TIMEOUT_S`). `--no-llm-synthesis` disables it.
+The model may select and reorder complete supported statements, but must copy their full text
+and original citations verbatim. The checker normalizes whitespace only. Paraphrasing,
+negation, changing predicates, dropping a clause or citation, and adding free-form unknowns
+are rejected. The deterministic statements always remain available. No paid or live LLM calls
+were used for the tests; fake transports exercise both acceptance and rejection.
 
 ## UX: `scripts/build_site.py` + `scripts/site_template.html`
 - `uv run python scripts/build_site.py --input ops-002=out/ops2-envelopes.jsonl --input smoke-004=out/smoke4-envelopes.jsonl --out site`

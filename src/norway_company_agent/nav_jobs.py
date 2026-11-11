@@ -24,6 +24,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -59,6 +60,10 @@ def _parse_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+
+
+class IncompleteFeedError(RuntimeError):
+    """The feed could not be exhausted, so its checkpoint must not advance."""
 
 
 class NavJobsFeed:
@@ -129,31 +134,65 @@ class NavJobsFeed:
 
     # -- feed sync ---------------------------------------------------------
     def _segment(self, start: datetime, end: datetime | None, max_pages: int) -> list[dict[str, Any]]:
-        status, body, _ = self._get("/api/v1/feed", since=start)
+        if max_pages < 1:
+            raise IncompleteFeedError("Nav feed page limit must be positive")
+        path = "/api/v1/feed"
+        visited: set[str] = set()
         items: list[dict[str, Any]] = []
-        pages = 0
-        while body and pages < max_pages:
-            pages += 1
-            page_items = body.get("items") or []
+        for page in range(max_pages):
+            if path in visited:
+                raise IncompleteFeedError("Nav feed pagination loop")
+            visited.add(path)
+            status, body, _ = self._get(path, since=start if page == 0 else None)
+            with self._lock:
+                self.pages += 1
+            if status != 200 or not isinstance(body, dict) or not isinstance(body.get("items"), list):
+                raise IncompleteFeedError("Nav feed returned an invalid page")
+            page_items = body["items"]
+            for item in page_items:
+                entry = item.get("_feed_entry") if isinstance(item, dict) else None
+                if not isinstance(entry, dict):
+                    raise IncompleteFeedError("Nav feed returned an invalid item header")
+                # The top-level id identifies a feed event, not necessarily the ad.
+                # Never substitute it for a missing ad UUID or silently skip an event.
+                uuid = entry.get("uuid")
+                if not isinstance(uuid, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", uuid):
+                    raise IncompleteFeedError("Nav feed returned an invalid ad identity")
+                if entry.get("status") not in ("ACTIVE", "INACTIVE"):
+                    raise IncompleteFeedError("Nav feed returned an invalid ad status")
+                ts = entry.get("sistEndret")
+                parsed_ts = _parse_ts(ts) if isinstance(ts, str) else None
+                if parsed_ts is None or parsed_ts.tzinfo is None:
+                    raise IncompleteFeedError("Nav feed returned an invalid change timestamp")
             items.extend(page_items)
             last_ts = _parse_ts((page_items[-1].get("_feed_entry") or {}).get("sistEndret")) if page_items else None
             next_url = body.get("next_url")
-            if not next_url or not page_items or (end is not None and last_ts is not None and last_ts >= end):
-                break
-            status, body, _ = self._get(next_url)
-        with self._lock:
-            self.pages += pages
-        return items
+            if next_url is None or next_url == "" or (end is not None and last_ts is not None and last_ts >= end):
+                return items
+            # Only the official feed endpoint may supply subsequent pages. Normalize
+            # absolute links so loop detection also covers relative/absolute aliases.
+            if not isinstance(next_url, str) or any(ord(c) < 33 for c in next_url):
+                raise IncompleteFeedError("Nav feed returned an unsafe pagination URL")
+            parsed = urlsplit(next_url)
+            if (parsed.scheme and parsed.scheme != "https") or (parsed.netloc and parsed.netloc != urlsplit(BASE).netloc) or parsed.fragment or not re.fullmatch(r"/api/v1/feed(?:/[A-Za-z0-9_-]+)?", parsed.path):
+                raise IncompleteFeedError("Nav feed returned an unsafe pagination URL")
+            path = parsed.path + ("?" + parsed.query if parsed.query else "")
+        raise IncompleteFeedError("Nav feed page limit reached before segment completed")
 
     def sync(self, *, now: datetime | None = None, max_pages_per_segment: int = 80) -> "NavJobsFeed":
         started = time.monotonic()
         now = now or datetime.now(timezone.utc)
+        self.error = None
         try:
             self._token()
             start = now - timedelta(days=self.window_days)
             cached_until = self._load_cache()
-            if cached_until and cached_until > start:
+            if cached_until and cached_until.tzinfo is not None and start < cached_until <= now:
                 start = cached_until - timedelta(hours=1)
+            else:
+                # Records loaded without a usable checkpoint are not a trustworthy
+                # baseline: a future record timestamp could suppress real updates.
+                self.headers = {}
             span = (now - start) / max(1, self.workers)
             span = max(span, timedelta(hours=6))
             bounds = []
@@ -166,13 +205,12 @@ class NavJobsFeed:
             for items in results:
                 for item in items:
                     entry = item.get("_feed_entry") or {}
-                    uuid = entry.get("uuid") or item.get("id")
-                    if not uuid:
-                        continue
+                    uuid = entry["uuid"]
                     record = {"uuid": uuid, "status": entry.get("status"), "title": entry.get("title"), "businessName": entry.get("businessName"),
                               "municipal": entry.get("municipal"), "sistEndret": entry.get("sistEndret"), "url": item.get("url")}
                     prior = self.headers.get(uuid)
-                    if prior is None or str(record["sistEndret"] or "") >= str(prior.get("sistEndret") or ""):
+                    prior_ts = _parse_ts(prior.get("sistEndret")) if prior else None
+                    if prior_ts is None or prior_ts.tzinfo is None or _parse_ts(record["sistEndret"]) >= prior_ts:
                         self.headers[uuid] = record
             self.synced_at = utc_now()
             try:
@@ -191,6 +229,11 @@ class NavJobsFeed:
                         if len(token) >= 4 and token not in GENERIC:
                             self.by_token.setdefault(token, []).append(record)
             self.status = "synced"
+        except IncompleteFeedError as exc:
+            # No segment results have been merged or saved: retry from the last
+            # complete checkpoint rather than silently skipping unread changes.
+            self.status = "incomplete"
+            self.error = str(exc)
         except Exception as exc:  # noqa: BLE001 - recorded; every company then gets source_error
             self.status = "source_error"
             self.error = f"{type(exc).__name__}: {str(exc)[:200]}"

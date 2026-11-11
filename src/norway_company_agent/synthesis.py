@@ -5,14 +5,13 @@ Deterministic, keyless and template-based. Every statement carries
     present in the profile evidence), and
   * ``facts``: JSON pointers into the profile plus the value read there.
 
-``validate_synthesis`` re-resolves every fact pointer against the profile, checks that every cited
-source exists in the profile evidence, and checks that every number written in a statement is one of
-the cited fact values (or a recomputed derived value). A statement that fails is dropped before
-publication, so the published synthesis can only say what the evidence says.
+``validate_synthesis`` checks exact deterministic statement regeneration, citation provenance and
+fact values against the profile. This is a closed-template integrity check, not a general semantic
+entailment test and not independent verification of the underlying source's truth.
 
-An optional LLM polish (``polish_with_llm``) rewrites the checked statements into a short narrative.
-It is off unless ``SIGNALPOST_LLM_API_KEY`` is set, and its output is post-checked the same way; a
-failing narrative is discarded and the template text stays the published synthesis.
+Optional LLM selection (``polish_with_llm``) may only select and reorder complete checked statements,
+verbatim with their citations. Free factual rewriting is rejected. It is off unless
+``SIGNALPOST_LLM_API_KEY`` is set; rejected output leaves the deterministic synthesis unchanged.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ import re
 import urllib.request
 from typing import Any
 
-SYNTHESIS_VERSION = "evidence_template_synthesis_v1"
+SYNTHESIS_VERSION = "evidence_template_synthesis_v2"
 
 AVAILABILITY = {
     "available": "available",
@@ -93,12 +92,16 @@ def pointer(*parts: Any) -> str:
 
 
 def resolve_pointer(document: Any, ptr: str) -> Any:
+    if not isinstance(ptr, str) or (ptr and not ptr.startswith("/")):
+        raise ValueError("Invalid JSON pointer")
     if ptr == "":
         return document
     value = document
     for raw in ptr.split("/")[1:]:
         key = raw.replace("~1", "/").replace("~0", "~")
         if isinstance(value, list):
+            if not re.fullmatch(r"0|[1-9][0-9]*", key):
+                raise ValueError("Invalid JSON pointer array index")
             value = value[int(key)]
         elif isinstance(value, dict):
             value = value[key]
@@ -170,7 +173,7 @@ class _Builder:
 
     def source(self, label: str, ptr: str, record: dict[str, Any]) -> str:
         url = record.get("source_url")
-        key = (url, record.get("content_sha256"), label)
+        key = (ptr, url, record.get("retrieved_at"), record.get("content_sha256"), label)
         if key in self._source_keys:
             return self._source_keys[key]
         sid = f"S{len(self.sources) + 1}"
@@ -675,7 +678,8 @@ SECTION_TITLES = {
 }
 
 
-def build_synthesis(profile: dict[str, Any], *, changes: list[dict] | None = None, refresh: dict | None = None) -> dict[str, Any]:
+def _template_statements(profile: dict[str, Any], changes: list[dict] | None = None, refresh: dict | None = None) -> tuple[_Builder, dict]:
+    """Build the fixed, auditable templates without invoking validation."""
     b = _Builder(profile)
     _identity(b)
     _description(b)
@@ -684,6 +688,11 @@ def build_synthesis(profile: dict[str, Any], *, changes: list[dict] | None = Non
     _locations(b)
     _digital(b)
     change_summary = _changes(b, refresh, changes)
+    return b, change_summary
+
+
+def build_synthesis(profile: dict[str, Any], *, changes: list[dict] | None = None, refresh: dict | None = None) -> dict[str, Any]:
+    b, change_summary = _template_statements(profile, changes, refresh)
     unknowns, availability = _unknowns(b)
     doc = {"organisation_number": profile.get("organisation_number"), "changes": changes or []}
     check = validate_synthesis({"statements": b.statements, "sources": b.sources}, {**profile, **doc})
@@ -716,42 +725,64 @@ def build_synthesis(profile: dict[str, Any], *, changes: list[dict] | None = Non
             "statements_checked": len(b.statements),
             "statements_published": len(statements),
             "dropped": check["failures"],
-            "rule": "every statement has >=1 citation to a source in the profile evidence; every fact pointer resolves to the stated value; every number in the text is a cited fact value or a recomputed derived value",
+            "rule": "every statement exactly matches a deterministic template regenerated from the profile, including facts and citation bindings; each source pointer and provenance matches the profile; numbers and derived values are checked",
         },
         "llm_polish": {"status": "not_configured"},
     }
 
 
-def _all_source_urls(document: Any) -> set[str]:
-    urls: set[str] = set()
-    stack = [document]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, dict):
-            for key, value in item.items():
-                if key in ("source_url", "source_identifier") and isinstance(value, str):
-                    urls.add(value)
-                elif isinstance(value, (dict, list)):
-                    stack.append(value)
-        elif isinstance(item, list):
-            stack.extend(item)
-    return urls
-
-
 def validate_synthesis(synthesis: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    source_ids = {s["id"]: s for s in synthesis.get("sources") or []}
-    known_urls = _all_source_urls(profile.get("evidence") or {}) | {c.get("source_url") for c in profile.get("changes") or [] if c.get("source_url")}
+    # Regenerate rather than mistaking shared numbers or names for factual support.
+    # Changes already carry their old/new provenance; refresh metadata is not needed
+    # to validate the wording of an existing change statement.
+    expected, _ = _template_statements(profile, profile.get("changes") or [], {
+        "previous_snapshot_supplied": True, "company_in_previous_snapshot": True,
+    })
+    expected_statements = {s["id"]: s for s in expected.statements}
+    expected_sources = {s["id"]: s for s in expected.sources}
+    sources = synthesis.get("sources") or []
+    source_ids = {s["id"]: s for s in sources}
     failures = []
+    if len(source_ids) != len(sources):
+        failures.append({"id": None, "problems": ["duplicate source ids"]})
+    invalid_sources = set()
+    for src in sources:
+        problems = []
+        if src != expected_sources.get(src["id"]):
+            problems.append("source does not match regenerated evidence binding")
+        try:
+            record = resolve_pointer(profile, src.get("evidence_pointer"))
+            if not isinstance(record, dict) or not str(src.get("evidence_pointer") or "").startswith("/evidence/"):
+                raise ValueError("not an evidence record")
+            for key in ("source_url", "retrieved_at", "content_sha256"):
+                if src.get(key) != record.get(key):
+                    problems.append(f"source {key} mismatch")
+            if not src.get("source_url"):
+                problems.append("source URL missing")
+        except (KeyError, IndexError, ValueError, TypeError):
+            problems.append("unresolvable source evidence pointer")
+        if problems:
+            invalid_sources.add(src["id"])
+            failures.append({"id": None, "problems": problems[:5]})
+    seen_ids = set()
     for s in synthesis.get("statements") or []:
         problems = []
+        expected_statement = expected_statements.get(s.get("id"))
+        if not expected_statement or any(s.get(key) != expected_statement.get(key) for key in (
+            "section", "text", "citations", "facts", "derived",
+        )):
+            problems.append("statement does not match a supported deterministic template")
+        if s.get("id") in seen_ids:
+            problems.append("duplicate statement id")
+        seen_ids.add(s.get("id"))
         if not s.get("citations"):
             problems.append("no citation")
         for c in s.get("citations") or []:
             src = source_ids.get(c)
             if not src:
                 problems.append(f"unknown citation {c}")
-            elif src.get("source_url") not in known_urls:
-                problems.append(f"citation {c} url not in profile evidence")
+            elif c in invalid_sources or src != expected_sources.get(c):
+                problems.append(f"citation {c} does not match its source evidence")
         allowed: set[str] = set()
         for fact in s.get("facts") or []:
             try:
@@ -761,10 +792,11 @@ def validate_synthesis(synthesis: dict[str, Any], profile: dict[str, Any]) -> di
                 continue
             projected = (isinstance(fact["value"], dict) and isinstance(actual, dict) and fact["value"] != actual) or (
                 isinstance(fact["value"], list) and isinstance(actual, list) and actual and isinstance(actual[0], dict))
-            if projected:  # a projection (selected keys / ids) of a structured record: every token must come from it
-                if not _value_tokens(fact["value"]) <= _value_tokens(actual) or (isinstance(actual, list) and len(fact["value"]) != len(actual)):
-                    problems.append(f"projection mismatch at {fact['pointer']}")
-                allowed |= _value_tokens(fact["value"]) | ({str(len(actual))} if isinstance(actual, list) else set())
+            if projected:
+                # The exact template comparison above verifies this projection's
+                # keys/ids and selected subset, including non-numeric content.
+                # A dated-news subset can legitimately be smaller than all news.
+                allowed |= _value_tokens(fact["value"]) | ({str(len(fact["value"]))} if isinstance(fact["value"], list) else set())
                 continue
             if actual != fact["value"]:
                 problems.append(f"value mismatch at {fact['pointer']}")
@@ -794,6 +826,13 @@ def validate_synthesis(synthesis: dict[str, Any], profile: dict[str, Any]) -> di
                 problems.append(f"unsupported number {token}")
         if problems:
             failures.append({"id": s.get("id"), "problems": problems[:5]})
+    polish = synthesis.get("llm_polish") or {}
+    if polish.get("narrative") is not None:
+        problems = check_narrative(polish["narrative"], synthesis)
+        if polish.get("status") != "accepted":
+            problems.append("unaccepted narrative must not be published")
+        if problems:
+            failures.append({"id": None, "problems": problems})
     return {"passed": not failures, "failures": failures, "failed_ids": {f["id"] for f in failures}}
 
 
@@ -820,35 +859,28 @@ def _chat(config: dict[str, str], messages: list[dict]) -> str:
 
 
 def check_narrative(narrative: str, synthesis: dict[str, Any]) -> list[str]:
-    """Each sentence must cite known sources, and its numbers and capitalised names must appear in the cited statements."""
-    by_cite: dict[str, list[str]] = {}
-    for s in synthesis.get("statements") or []:
-        for c in s["citations"]:
-            by_cite.setdefault(c, []).append(s["text"])
-    problems = []
-    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+(?=[A-ZÆØÅ“\"])|(?<=\])\s+(?=[A-ZÆØÅ“\"])", narrative.strip()) if x.strip()]
-    if not sentences:
+    """Only allow whole verified statements with their original citations, verbatim.
+
+    Token/name checks cannot detect changed predicates, negation or invented claims.
+    Selection and reordering are the only supported LLM operations. Normalize layout
+    whitespace, but do not relax words, punctuation, citation membership or ordering.
+    """
+    normalize = lambda text: re.sub(r"\s+", " ", text).strip()
+    if not isinstance(narrative, str) or not narrative.strip():
         return ["empty narrative"]
-    for sentence in sentences:
-        cites = CITE.findall(sentence)
-        if not cites:
-            problems.append(f"uncited sentence: {sentence[:80]}")
-            continue
-        if any(c not in by_cite for c in cites):
-            problems.append(f"unknown citation in: {sentence[:80]}")
-            continue
-        support = " ".join(t for c in cites for t in by_cite[c])
-        allowed = _number_tokens(support)
-        body = CITE.sub("", sentence)
-        for token in _number_tokens(body):
-            if token not in allowed:
-                problems.append(f"unsupported number {token}")
-        words = re.findall(r"(?<![.!?]\s)(?<!^)\b([A-ZÆØÅ][\wÆØÅæøå&.-]{2,})", body)
-        low = support.casefold()
-        for word in words:
-            if word.casefold() not in low and word not in {"The", "Its", "It", "Nav", "NOK", "Norway", "Norwegian", "In", "According", "This", "Since"}:
-                problems.append(f"unsupported name {word}")
-    return problems
+    remaining = normalize(narrative)
+    choices = {
+        normalize(s["text"] + " " + "".join(f"[{c}]" for c in s["citations"]))
+        for s in synthesis.get("statements") or []
+        if s.get("text") and s.get("citations")
+    }
+    choices = sorted(choices, key=len, reverse=True)
+    while remaining:
+        match = next((text for text in choices if remaining == text or remaining.startswith(text + " ")), None)
+        if match is None:
+            return ["narrative is not a verbatim selection of supported statements and citations"]
+        remaining = remaining[len(match):].lstrip()
+    return []
 
 
 def polish_with_llm(synthesis: dict[str, Any], config: dict[str, str] | None = None, chat=_chat) -> dict[str, Any]:
@@ -857,8 +889,8 @@ def polish_with_llm(synthesis: dict[str, Any], config: dict[str, str] | None = N
         return synthesis
     facts = [{"citations": s["citations"], "text": s["text"]} for s in synthesis.get("statements") or []]
     messages = [
-        {"role": "system", "content": "You summarise Norwegian company profiles for a business reader. Use ONLY the supplied statements. Do not add facts, opinions, numbers, names or dates that are not in them. Write 3-6 plain English sentences. End every sentence with the citation markers of the statements it uses, e.g. [S1][S3]. Keep Norwegian quotes as given. If something is unknown, you may say so using the unknowns list."},
-        {"role": "user", "content": json.dumps({"statements": facts, "unknowns": synthesis.get("unknowns_text")}, ensure_ascii=False)},
+        {"role": "system", "content": "Select up to 6 of the supplied statements for a concise company overview. Copy each selected text VERBATIM in full, even when it contains several sentences, then a space and ALL its citation markers in the supplied order, e.g. [S1][S3]. You may only select and reorder complete statements. Do not paraphrase, combine, shorten, explain, add headings, or add unknowns. Separate selections with whitespace."},
+        {"role": "user", "content": json.dumps({"statements": facts}, ensure_ascii=False)},
     ]
     try:
         narrative = chat(config, messages).strip()
@@ -869,5 +901,5 @@ def polish_with_llm(synthesis: dict[str, Any], config: dict[str, str] | None = N
     if problems:
         synthesis["llm_polish"] = {"status": "rejected_by_post_check", "model": config["model"], "problems": problems[:8]}
     else:
-        synthesis["llm_polish"] = {"status": "accepted", "model": config["model"], "narrative": narrative, "post_check": "every sentence cites known sources; numbers and names are present in the cited statements"}
+        synthesis["llm_polish"] = {"status": "accepted", "model": config["model"], "narrative": narrative, "post_check": "verbatim selection of complete supported statements with unchanged citations; no free rewriting"}
     return synthesis

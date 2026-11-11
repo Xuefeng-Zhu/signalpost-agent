@@ -93,7 +93,8 @@ Increase `--count` and `--expected-count` together for a larger local test. The 
   An ad is published only when its `employer.orgnr` is the company's own organisation number or one of
   its Brreg subunits' numbers. The run uses the public token Nav publishes; set `NAV_JOBS_FEED_TOKEN`
   to use a consumer token instead. Feed headers are cached in `.cache/nav-job-feed-headers.jsonl.gz`
-  (`--nav-cache ''` disables the cache).
+  (`--nav-cache ''` disables the cache). An incomplete, capped or looping feed sync is recorded as
+  a source failure and does not advance the last complete cache checkpoint.
 
 Details and measurements: `notes/site-signals.md`.
 
@@ -131,8 +132,11 @@ validation re-checks every statement (`synthesis_present_and_every_statement_sup
 synthesis is deterministic and keyless. An optional LLM polish runs only when
 `SIGNALPOST_LLM_API_KEY` is set (OpenAI-compatible; `SIGNALPOST_LLM_BASE_URL`, default
 `https://api.openai.com/v1`; `SIGNALPOST_LLM_MODEL`, default `gpt-4o-mini`; `SIGNALPOST_LLM_TIMEOUT_S`).
-Its narrative is post-checked (every sentence cites known sources; numbers and names must appear in
-the cited statements) and discarded if the check fails. `--no-llm-synthesis` forces it off. We ship
+The optional model may only select and reorder complete verified statements, copied verbatim with
+all their original citations. Free factual rewriting is rejected; matching numbers and names alone
+does not establish factual support. Statement text, fact values, and source pointers/metadata are
+also checked against deterministic regeneration from the profile. This verifies output integrity,
+not the independent truth of the source. `--no-llm-synthesis` forces the optional model off. We ship
 no key; with no key the declared third-party cost stays $0.
 
 ## Review site (find, verify, compare)

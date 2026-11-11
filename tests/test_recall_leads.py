@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import socket
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,7 @@ from norway_company_agent.refresh import diff_profile  # noqa: E402
 
 ORG = "916340257"
 OTHER = "920990029"
+PUBLIC_DNS = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
 
 
 def profile(name="ASVO MÅLØY AS", email="", nav=None, web_leads=None, street="Gate 1", postcode="6700"):
@@ -127,7 +129,8 @@ class ProbeTests(unittest.TestCase):
         site = fake_site({"https://asvomaloy.no/": shell})
         rendered = {"final_url": "https://asvomaloy.no/", "html": f"<html><body>ASVO Måløy AS · Org.nr {ORG}</body></html>", "links": [], "elapsed_ms": 5}
         with patch.object(wd, "_get", site), patch.object(wd, "_resolves", lambda host: True), \
-                patch.object(js_render, "available", lambda: True), patch.object(js_render, "render", lambda url, **kw: rendered):
+                patch.object(js_render, "available", lambda: True), patch.object(js_render, "render", lambda url, **kw: rendered), \
+                patch("norway_company_agent.website.socket.getaddrinfo", return_value=PUBLIC_DNS):
             outcome = wd.probe_site("asvomaloy.no", hints, wd._Budget(20, 60))
         self.assertEqual(outcome["status"], "verified")
         self.assertTrue(any(page.get("rendered") for page in outcome["pages"]))
@@ -138,7 +141,8 @@ class ProbeTests(unittest.TestCase):
         site = fake_site({"https://asvomaloy.no/": shell})
         rendered = {"final_url": "https://asvomaloy.no/", "html": f"<html><body>Org.nr {ORG} og {OTHER}</body></html>", "links": [], "elapsed_ms": 5}
         with patch.object(wd, "_get", site), patch.object(wd, "_resolves", lambda host: True), \
-                patch.object(js_render, "available", lambda: True), patch.object(js_render, "render", lambda url, **kw: rendered):
+                patch.object(js_render, "available", lambda: True), patch.object(js_render, "render", lambda url, **kw: rendered), \
+                patch("norway_company_agent.website.socket.getaddrinfo", return_value=PUBLIC_DNS):
             outcome = wd.probe_site("asvomaloy.no", hints, wd._Budget(20, 60))
         self.assertEqual(outcome["status"], "ambiguous")
 

@@ -45,7 +45,7 @@ class SocialTests(unittest.TestCase):
         self.assertEqual(ss._social_handle("https://facebook.com/p/Austevoll-Auto-As-100064576124376"), "Austevoll-Auto-As-100064576124376")
 
     def test_jsonld_same_as_is_published(self):
-        html = """<script type="application/ld+json">{"@type":"Organization","name":"X","sameAs":["https://www.linkedin.com/company/123456/"]}</script>"""
+        html = """<script type="application/ld+json">{"@type":"Organization","name":"EKSEMPEL RØR AS","sameAs":["https://www.linkedin.com/company/123456/"]}</script>"""
         published, _ = ss.extract_social([page(html)], ss.brand_tokens(PROFILE, "https://eksempelror.no/"))
         self.assertEqual(published[0]["match"], "site_jsonld_organization_sameAs")
 

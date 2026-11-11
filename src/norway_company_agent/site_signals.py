@@ -6,7 +6,7 @@ Every fact carries the page URL it came from, retrieval time, content hash and t
 Signals (each with its own field state):
   * social_profiles  - outbound profile links (share/intent/post links rejected), only published when
                        the handle matches the brand/domain/legal name or the site's own JSON-LD
-                       ``Organization.sameAs`` declares it; everything else is kept as unpublished candidates.
+                       identity-bound ``Organization.sameAs`` declares it; everything else is kept as unpublished candidates.
   * news_posts       - dated posts from the site's RSS/Atom feed, its news/press/blog index, or sitemap.
   * careers          - careers page(s), job postings (JSON-LD JobPosting, ATS links, child pages) and an
                        explicit "no vacancies" state.
@@ -178,20 +178,25 @@ def brand_tokens(profile: dict[str, Any], site_url: str, title: str = "") -> dic
     domain_label = _fold(tldextract.extract(urllib.parse.urlparse(site_url).hostname or "").domain).replace("-", "")
     words = [w for w in re.findall(r"[a-z0-9]+", _fold(profile.get("name"))) if w not in {"as", "asa", "ans", "da", "enk", "sa", "nuf"}]
     distinctive = [w for w in words if len(w) >= 4 and w not in GENERIC_NAME_WORDS]
-    return {"domain": domain_label, "joined": "".join(words), "distinctive": distinctive}
+    return {"domain": domain_label, "joined": "".join(words), "distinctive": distinctive,
+            "legal_name": _identity_name(profile.get("name")),
+            "organisation_number": str(profile.get("organisation_number") or ""), "site_url": site_url}
 
 
 def handle_matches(handle: str, tokens: dict[str, Any]) -> bool:
     h = re.sub(r"[^a-z0-9]", "", _fold(handle))
     if len(h) < 3 or h in VENDOR_HANDLES:
         return False
-    domain = tokens.get("domain") or ""
-    joined = tokens.get("joined") or ""
-    if domain and len(domain) >= 3 and (domain in h or (len(h) >= 5 and h in domain)):
+    # A brand inside another handle is not ownership evidence (e.g. "notacme"
+    # or "acme-partner"). Accept whole names and narrowly bounded conventions.
+    aliases = {tokens.get("domain") or "", tokens.get("joined") or "",
+               re.sub(r"[^a-z0-9]", "", tokens.get("legal_name") or "")}
+    aliases = {alias for alias in aliases if len(alias) >= 3 and alias not in VENDOR_HANDLES}
+    if h in aliases or any(h == alias + "official" for alias in aliases):
         return True
-    if joined and len(joined) >= 4 and (joined in h or (len(h) >= 6 and h in joined)):
-        return True
-    return any(len(word) >= 5 and word in h for word in tokens.get("distinctive") or [])
+    # Facebook's /p/ profile URLs append a long numeric ID to the full name.
+    slug = re.sub(r"[-_]\d{5,}$", "", _fold(handle))
+    return slug != _fold(handle) and re.sub(r"[^a-z0-9]", "", slug) in aliases
 
 
 def _social_handle(url: str) -> str:
@@ -228,11 +233,70 @@ def _types(node: dict[str, Any]) -> set[str]:
     return set(kind if isinstance(kind, list) else [kind]) - {None}
 
 
-def org_same_as(nodes: list[Any]) -> set[str]:
+def _identity_name(value: Any) -> str:
+    words = re.findall(r"[a-z0-9]+", _fold(value))
+    return " ".join(words)
+
+
+def _same_homepage(raw: Any, site_url: str, page_url: str) -> bool:
+    if not isinstance(raw, str) or not raw.strip() or not site_url:
+        return False
+    try:
+        candidate = urllib.parse.urlparse(urllib.parse.urljoin(page_url or site_url, raw))
+        home = urllib.parse.urlparse(site_url)
+        same_port = candidate.port == home.port
+    except ValueError:
+        return False
+    return (candidate.scheme in {"http", "https"}
+            and (candidate.hostname or "").casefold().removeprefix("www.")
+            == (home.hostname or "").casefold().removeprefix("www.")
+            and not candidate.username and not candidate.password
+            and same_port
+            and candidate.path.rstrip("/") == home.path.rstrip("/")
+            and not candidate.query)
+
+
+def _org_matches_identity(item: dict[str, Any], tokens: dict[str, Any], page_url: str) -> bool:
+    # Only identifiers attached to this organization count, never a child/parent's.
+    identifiers = []
+    for key in ("taxID", "vatID", "identifier"):
+        raw = item.get(key)
+        for value in raw if isinstance(raw, list) else [raw]:
+            if isinstance(value, dict):
+                value = value.get("value")
+            if isinstance(value, (str, int)):
+                number = re.sub(r"\D", "", str(value))
+                if len(number) == 9:
+                    identifiers.append(number)
+    target_number = tokens.get("organisation_number")
+    if identifiers and target_number:
+        return all(number == target_number for number in identifiers)
+    names = [item.get(key) for key in ("legalName", "name") if isinstance(item.get(key), str) and item[key].strip()]
+    target_name = tokens.get("legal_name")
+    # A contradictory legal name cannot be rescued by a loose brand match.
+    if item.get("legalName") and target_name and _identity_name(item["legalName"]) != target_name:
+        return False
+    if target_name and any(_identity_name(name) == target_name for name in names):
+        return True
+    # Common CMS graphs identify a brand (rather than its legal name) by its
+    # exact homepage URL. A local @id alone is not evidence of ownership.
+    domain = tokens.get("domain")
+    brand_name = any(re.sub(r"[^a-z0-9]", "", _fold(name)) == domain for name in names)
+    return ((not names or brand_name)
+            and _same_homepage(item.get("url"), tokens.get("site_url") or "", page_url))
+
+
+def org_same_as(nodes: list[Any], tokens: dict[str, Any] | None = None, *, page_url: str = "") -> set[str]:
+    """Read organization links, optionally requiring a verified target identity.
+
+    Omitting tokens enumerates candidates only; callers must not publish them.
+    """
     found: set[str] = set()
     for node in nodes:
         for item in _walk(node):
             if _types(item) & {"Organization", "Corporation", "LocalBusiness", "ProfessionalService", "Store", "Restaurant", "HomeAndConstructionBusiness"}:
+                if tokens is not None and not _org_matches_identity(item, tokens, page_url):
+                    continue
                 same = item.get("sameAs")
                 for raw in (same if isinstance(same, list) else [same]):
                     if isinstance(raw, str):
@@ -245,10 +309,12 @@ def org_same_as(nodes: list[Any]) -> set[str]:
 def extract_social(pages: list[dict[str, Any]], tokens: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     published: dict[str, dict[str, Any]] = {}
     candidates: dict[str, dict[str, Any]] = {}
+    structured_urls = set().union(*(org_same_as(page["jsonld"]) for page in pages))
     for page in pages:
-        declared = org_same_as(page["jsonld"])
+        all_declared = org_same_as(page["jsonld"])
+        declared = org_same_as(page["jsonld"], tokens, page_url=page["url"])
         hrefs = [(href, text) for href, text in page["links"]]
-        hrefs.extend((url, "json-ld sameAs") for url in declared)
+        hrefs.extend((url, "json-ld sameAs") for url in sorted(all_declared))
         for href, text in hrefs:
             url = href
             parsed = urllib.parse.urlparse(url)
@@ -269,11 +335,11 @@ def extract_social(pages: list[dict[str, Any]], tokens: dict[str, Any]) -> tuple
             if social["url"] in declared:
                 item.update(match="site_jsonld_organization_sameAs", confidence=0.97)
                 published[social["url"]] = item
-            elif handle_matches(handle, tokens):
+            elif social["url"] not in structured_urls and handle_matches(handle, tokens):
                 item.update(match="handle_matches_brand_or_domain", confidence=0.95)
                 published[social["url"]] = item
             else:
-                item.update(match="unmatched_handle_not_published")
+                item.update(match="unverified_organization_identity" if social["url"] in structured_urls else "unmatched_handle_not_published")
                 candidates.setdefault(social["url"], item)
     for url in published:
         candidates.pop(url, None)
