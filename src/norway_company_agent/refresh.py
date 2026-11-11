@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from .registry_state import BOOLEAN_FIELDS, registry_boolean
 
 
 TRACKED_FIELDS: dict[str, tuple[str, ...]] = {
+    "registry.forced_dissolution": ("forced_dissolution",),
+    "registry.bankrupt": ("bankrupt",),
+    "registry.liquidating": ("liquidating",),
     "registry.name": ("name",),
     "registry.legal_form": ("legal_form",),
     "registry.employees": ("employees",),
@@ -19,6 +25,25 @@ TRACKED_FIELDS: dict[str, tuple[str, ...]] = {
     "website.social_links": ("evidence", "website", "value", "social_links"),
     "website.official_website": ("evidence", "website", "official_website", "value"),
 }
+
+
+# Only the tracked outer collections are unordered. Preserve nested list order
+# (e.g. address lines), every value, and duplicates so amendments remain visible.
+COLLECTION_IDENTITIES = {
+    "financials.records": ("record_id", "account_type", "period"),
+    "financial_history.years": (),
+    "roles.roles": ("organisation_number", "name", "group_code", "role_code"),
+    "locations.locations": ("organisation_number",),
+    "website.social_links": ("platform", "url"),
+}
+
+
+def _canonical_collection(value: Any, identity: tuple[str, ...]) -> Any:
+    def key(item: Any) -> tuple[str, str]:
+        stable_id = [item.get(name) for name in identity] if isinstance(item, dict) else item
+        return (json.dumps(stable_id, sort_keys=True, ensure_ascii=False),
+                json.dumps(item, sort_keys=True, ensure_ascii=False))
+    return sorted(value, key=key) if isinstance(value, list) else value
 
 
 def _sorted_ids(path: tuple[str, ...], key: str):
@@ -62,14 +87,20 @@ def _observation(profile: dict[str, Any], field: str) -> tuple[Any, dict, str]:
         live = records.get("registry_live")
         if isinstance(live, dict):
             value = live.get("value")
-            if live.get("status") != "available" or not isinstance(value, dict):
+            if (live.get("status") != "available" or not isinstance(value, dict)
+                    or str(value.get("organisation_number") or "").strip() != str(profile.get("organisation_number") or "").strip()):
                 return None, live, "registry_live"
             if key == "municipality" and "business_address" in value:
                 return _read(value, ("business_address", "kommune")), live, "registry_live"
             if key in value:
-                return value[key], live, "registry_live"
-        return _read(profile, TRACKED_FIELDS[field]), records.get("registry") or {}, "registry"
+                return registry_boolean(value[key]) if key in BOOLEAN_FIELDS else value[key], live, "registry_live"
+            if key in BOOLEAN_FIELDS:
+                return None, live, "registry_live"
+        value = _read(profile, TRACKED_FIELDS[field])
+        return registry_boolean(value) if key in BOOLEAN_FIELDS else value, records.get("registry") or {}, "registry"
     value = PROJECTED_FIELDS[field](profile) if field in PROJECTED_FIELDS else _read(profile, TRACKED_FIELDS[field])
+    if field in COLLECTION_IDENTITIES:
+        value = _canonical_collection(value, COLLECTION_IDENTITIES[field])
     return value, records.get(module) or {}, module
 
 
@@ -149,6 +180,10 @@ def classify_refresh_failures(previous: dict[str, Any], current: dict[str, Any],
             if isinstance(detail, dict):
                 if detail.get("collection_complete") is False or detail.get("errors"):
                     return False
+                if field == "site_signals.news_post_urls":
+                    window = detail.get("news_posts_collection") or {}
+                    if window.get("collection_complete") is True and (window.get("truncated") or window.get("window_complete") is False):
+                        return False
                 if field.startswith("nav_jobs."):
                     if detail.get("candidates_total", 0) > detail.get("candidates_checked", 0):
                         return False
@@ -171,6 +206,15 @@ def classify_refresh_failures(previous: dict[str, Any], current: dict[str, Any],
         elif not observed(previous_record, old_value):
             change["material"] = False
             change["change_type"] = "previous_source_unavailable"
+        elif field == "site_signals.news_post_urls" and not all(
+            ((source.get("value") or {}).get("news_posts_collection") or {}).get("collection_complete") is True
+            for source in (previous_record, record)
+        ):
+            # A feed, index or top-N window cannot prove publication or deletion.
+            change["material"] = False
+            change["change_type"] = "collection_window_changed"
+            change["observed_added_ids"] = sorted(set(new_value or []) - set(old_value or []))
+            change["observed_missing_ids"] = sorted(set(old_value or []) - set(new_value or []))
         else:
             change.setdefault("material", True)
             change.setdefault("change_type", "added" if change.get("old_value") in (None, "", []) else "removed" if change.get("new_value") in (None, "", []) else "updated")

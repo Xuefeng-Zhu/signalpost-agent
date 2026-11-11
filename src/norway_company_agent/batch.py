@@ -254,6 +254,8 @@ def contract_fields(profile: dict[str, Any], module_states: dict[str, dict], *, 
         })
     for item in profile.get("errors") or []:
         errors.append({"field": item.get("stage"), "state": "failed", "message": item.get("error")})
+    from .synthesis import synthesis_cost
+    cost = synthesis_cost(profile.get("synthesis"))
     metrics = profile.get("run_metrics") or {}
     return {
         "run": {
@@ -269,7 +271,8 @@ def contract_fields(profile: dict[str, Any], module_states: dict[str, dict], *, 
             "requests": metrics.get("requests"),
             "bytes": metrics.get("bytes"),
             "runtime_ms": None,  # per-company wall time is not separable in the concurrent run; see report.json operations
-            "third_party_cost_usd": 0,
+            "third_party_cost_usd": cost["cost_usd"],
+            "llm_accounting": cost,
         },
     }
 

@@ -1,67 +1,46 @@
-"""Optional headless-Chromium rendering for JS-only company sites (empty static HTML shells).
+"""JS-shell detection and fail-closed browser fallback.
 
-Used only as a bounded fallback inside website discovery: when a promising candidate's static
-homepage carries almost no text (a React/Vue/Lovable/Wix shell), the page is rendered once so the
-organisation number in its footer or contact section can be read. Identity rules are unchanged:
-the rendered HTML goes through exactly the same org-number / legal-name+address gate.
+Browser rendering is currently disabled, including when Playwright is installed or
+``SIGNALPOST_JS_FALLBACK=1`` is set. Chromium resolves names independently of Python;
+URL filtering and DNS prechecks cannot prevent DNS rebinding / resolution-to-connect
+races, proxy-side resolution, or browser traffic outside HTTP route interception
+(service workers, WebSockets, WebRTC, and browser background requests).
 
-Playwright is an *optional* dependency (``uv sync --extra browser`` then
-``playwright install chromium``). When it is not importable, or Chromium cannot launch, every call
-returns ``None`` and discovery simply continues with the static result. ``SIGNALPOST_JS_FALLBACK=0``
-turns rendering off. Images, fonts and media are not downloaded; robots.txt is checked by the
-caller before a page is rendered.
+Re-enabling rendering requires a separately enforced, tested network boundary for
+*all* browser egress, including redirects and subresources: only public destinations
+at connection time, no direct/proxy bypass, and no access to local/private networks.
+No such boundary is provided by this module. Static discovery remains available.
+The URL/DNS helpers below are defense in depth, NOT that network boundary.
 """
 from __future__ import annotations
 
-import os
-import threading
-import time
+import ipaddress
+import socket
+import urllib.parse
 from typing import Any
 
-_LOCK = threading.Lock()
-_STATE: dict[str, Any] = {"checked": False, "available": False, "reason": None}
-_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SIGNALPOST_JS_CONCURRENCY", "3") or 3))
-_STATS = {"renders": 0, "failures": 0, "ms": 0}
-_STATS_LOCK = threading.Lock()
+_DISABLED_REASON = "browser rendering disabled: no enforced public-only browser egress boundary"
 
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome Safari/537.36 builderr-signalpost-poc/0.1 (+https://builderr.ai)"
 JS_SHELL_MARKERS = ('id="root"', "id='root'", 'id="app"', "id='app'", 'id="__next"', "__nuxt", "ng-version", "data-reactroot", "lovable", "wix.com", "squarespace", "webflow", "framer")
 
 
 def enabled() -> bool:
-    return os.environ.get("SIGNALPOST_JS_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+    """False until a connection-level browser egress boundary is implemented."""
+    return False
 
 
 def available() -> bool:
-    """True when Playwright imports and Chromium launches (checked once per process)."""
-    if not enabled():
-        return False
-    with _LOCK:
-        if _STATE["checked"]:
-            return _STATE["available"]
-        _STATE["checked"] = True
-        try:
-            from playwright.sync_api import sync_playwright  # noqa: F401
-        except Exception as exc:  # noqa: BLE001 - optional dependency
-            _STATE["reason"] = f"playwright not installed: {type(exc).__name__}"
-            return False
-        try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-                browser.close()
-            _STATE["available"] = True
-        except Exception as exc:  # noqa: BLE001 - browser binary or system libs missing
-            _STATE["reason"] = f"chromium launch failed: {type(exc).__name__}: {str(exc)[:120]}"
-        return _STATE["available"]
+    """Never probe or launch Chromium in an environment with unbounded egress."""
+    return False
 
 
 def status() -> dict[str, Any]:
-    with _STATS_LOCK:
-        return {"enabled": enabled(), "available": _STATE["available"], "checked": _STATE["checked"], "reason": _STATE["reason"], **_STATS}
+    return {"enabled": False, "available": False, "checked": True,
+            "reason": _DISABLED_REASON, "renders": 0, "failures": 0, "ms": 0}
 
 
 def looks_like_js_shell(raw: bytes | str, text_length: int) -> bool:
-    """Static HTML with (almost) no readable text, or a known SPA/site-builder shell with little text."""
+    """Static HTML with little readable text and JS / known SPA markers."""
     head = raw[:200_000].decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)[:200_000]
     lowered = head.casefold()
     scripts = lowered.count("<script")
@@ -70,69 +49,77 @@ def looks_like_js_shell(raw: bytes | str, text_length: int) -> bool:
     return text_length < 1500 and scripts >= 3 and any(marker in lowered for marker in JS_SHELL_MARKERS)
 
 
-def _private_host(url: str) -> bool:
-    import ipaddress
-    import urllib.parse
+def _public_address(value: str) -> bool:
+    address = ipaddress.ip_address(value)
+    # Reject transition / scoped addresses rather than relying on differences in
+    # Python's classification of mapped IPv4, 6to4 and Teredo addresses.
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.scope_id or address.ipv4_mapped or address.sixtofour or address.teredo:
+            return False
+    return address.is_global and not address.is_multicast
 
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https", "data", "blob"}:
-        return True
-    host = (parsed.hostname or "").strip("[]").casefold()
-    if parsed.scheme in {"data", "blob"}:
-        return False
-    if not host or host == "localhost" or host.endswith(".localhost") or host.endswith(".internal") or host.endswith(".local"):
-        return True
+
+def _url_target(url: str) -> tuple[str, int]:
+    if not isinstance(url, str) or any(ord(c) <= 32 or ord(c) == 127 for c in url) or "\\" in url:
+        raise ValueError("ambiguous URL")
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or parsed.username is not None or parsed.password is not None:
+        raise ValueError("unsupported scheme or userinfo")
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if not host or "%" in host:
+        raise ValueError("missing or scoped/encoded hostname")
+    port = parsed.port
+    if port == 0:
+        raise ValueError("invalid port")
+    return host, port or (443 if parsed.scheme == "https" else 80)
+
+
+def _private_host(url: str) -> bool:
+    """Cheap lexical rejection only; False does NOT establish a public target."""
     try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
+        host, _ = _url_target(url)
+        if host in {"localhost", "local", "internal", "home", "lan"} or host.endswith((".localhost", ".internal", ".local", ".home", ".lan")):
+            return True
+        try:
+            return not _public_address(host)
+        except ValueError:
+            # A single label can be resolved through local DNS search domains.
+            return "." not in host
+    except (ValueError, TypeError):
+        return True
+
+
+def _public_request(url: str) -> bool:
+    """Check every returned DNS address without caching; not a connection guarantee."""
+    if _private_host(url):
         return False
-    return not address.is_global
+    try:
+        host, port = _url_target(url)
+        answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        return bool(answers) and all(
+            family in {socket.AF_INET, socket.AF_INET6} and _public_address(sockaddr[0])
+            for family, _, _, _, sockaddr in answers
+        )
+    except (OSError, ValueError, TypeError, IndexError):
+        return False
 
 
 def _route(route: Any) -> None:
+    """Defense-in-depth filter for navigation, redirects and subresources.
+
+    Not used to enable rendering: Playwright interception is not an egress firewall.
+    """
     request = route.request
-    if request.resource_type in {"image", "media", "font"} or _private_host(request.url):
+    if request.resource_type in {"image", "media", "font"} or not _public_request(request.url):
         route.abort()
     else:
         route.continue_()
 
 
 def render(url: str, *, timeout_s: float = 15.0, settle_ms: int = 1500) -> dict[str, Any] | None:
-    """Render ``url`` and return ``{"final_url", "html", "links", "elapsed_ms"}`` or ``None``."""
-    if not available():
-        return None
-    acquired = _SLOTS.acquire(timeout=timeout_s)
-    if not acquired:
-        return None
-    started = time.monotonic()
-    try:
-        from playwright.sync_api import sync_playwright
+    """Return no browser evidence until safe browser networking is implemented.
 
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            try:
-                context = browser.new_context(user_agent=USER_AGENT, java_script_enabled=True, locale="nb-NO")
-                context.route("**/*", _route)
-                page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=int(timeout_s * 1000))
-                try:
-                    page.wait_for_load_state("networkidle", timeout=int(min(6.0, timeout_s) * 1000))
-                except Exception:  # noqa: BLE001 - long-polling sites never go idle; use what rendered
-                    pass
-                page.wait_for_timeout(settle_ms)
-                html = page.content()
-                final_url = page.url
-                links = page.eval_on_selector_all("a[href]", "els => els.map(e => [e.href, (e.innerText || '').trim().slice(0, 80)])")
-            finally:
-                browser.close()
-        elapsed = int((time.monotonic() - started) * 1000)
-        with _STATS_LOCK:
-            _STATS["renders"] += 1
-            _STATS["ms"] += elapsed
-        return {"final_url": final_url, "html": html, "links": [tuple(item) for item in links or []], "elapsed_ms": elapsed}
-    except Exception:  # noqa: BLE001 - a render failure is just "no extra evidence"
-        with _STATS_LOCK:
-            _STATS["failures"] += 1
-        return None
-    finally:
-        _SLOTS.release()
+    Deliberately do not import Playwright, resolve the URL, or start a browser.
+    This independent guard cannot be enabled by stale availability state or env vars.
+    """
+    return None

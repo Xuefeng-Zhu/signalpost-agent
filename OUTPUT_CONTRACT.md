@@ -41,3 +41,9 @@ Emit one JSON object per input organisation number.
 ```
 
 Allowed availability states are `available`, `not_available`, `blocked`, `not_applicable`, `ambiguous` and `failed`. A checked source that has zero jobs or zero locations is different from a source that was not checked.
+
+`operations.third_party_cost_usd` is `null` when an attempted model request has an unknown charge.
+The accompanying `llm_accounting` records request count, usage, cost status and provenance when available.
+A reported zero means no model request was made, or an explicit provider USD charge was zero; it must
+not be substituted for missing provider pricing. Aggregate reports include known subtotals and the
+number of requests whose cost is unknown.

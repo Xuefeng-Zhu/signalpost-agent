@@ -36,7 +36,7 @@ def profile() -> dict:
         "evidence": {
             "registry": evidence("registry", "available", "official_registry_bulk", "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv", value=raw, retrieved_at=T, content_sha256="a" * 64),
             "registry_live": evidence("registry_live", "available", "official_registry_live", f"https://data.brreg.no/enhetsregisteret/api/enheter/{ORG}", retrieved_at=T, content_sha256="b" * 64,
-                                      value={"employees": 71, "business_address": {"adresse": ["Årvollskogen 103"], "postnummer": "1529", "poststed": "MOSS", "kommune": "MOSS"}}),
+                                      value={"organisation_number": ORG, "employees": 71, "business_address": {"adresse": ["Årvollskogen 103"], "postnummer": "1529", "poststed": "MOSS", "kommune": "MOSS"}}),
             "financials": evidence("financials", "available", "official_annual_accounts", f"https://data.brreg.no/regnskapsregisteret/regnskap/{ORG}", retrieved_at=T, content_sha256="d" * 64, value={"records": [
                 {"account_type": "SELSKAP", "period": {"fraDato": "2024-01-01", "tilDato": "2024-12-31"}, "currency": "NOK", "revenue": 3383867.0, "operating_result": 206752.0, "annual_result": 155789.0, "assets": 792691.0, "equity": 412792.0, "debt": 379900.0},
                 {"account_type": "SELSKAP", "period": {"fraDato": "2025-01-01", "tilDato": "2025-12-31"}, "currency": "NOK", "revenue": None, "operating_result": 88957.0, "annual_result": -69694.0, "assets": 844291.0, "equity": 482486.0, "debt": 361806.0},

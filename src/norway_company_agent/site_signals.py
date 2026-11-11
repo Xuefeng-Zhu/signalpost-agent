@@ -399,24 +399,26 @@ def parse_feed(raw: bytes, site_domain: str) -> list[dict[str, Any]]:
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
         published = _iso_from_any(item.findtext("pubDate") or item.findtext("{http://purl.org/dc/elements/1.1/}date"))
-        posts.append((title, link, published))
+        posts.append((title, link, published, None, "feed_pubDate"))
     for entry in root.findall(f".//{ns_atom}entry"):
         title = (entry.findtext(f"{ns_atom}title") or "").strip()
         link_node = entry.find(f"{ns_atom}link")
         link = (link_node.get("href") if link_node is not None else "") or ""
-        published = _iso_from_any(entry.findtext(f"{ns_atom}published") or entry.findtext(f"{ns_atom}updated"))
-        posts.append((title, link, published))
+        published = _iso_from_any(entry.findtext(f"{ns_atom}published"))
+        modified = _iso_from_any(entry.findtext(f"{ns_atom}updated"))
+        posts.append((title, link, published, modified, "feed_published"))
     output = []
-    if any(re.sub(r"[^a-z ]", "", _fold(title)).strip() in {"hello world", "hei verden"} for title, _, _ in posts):
+    if any(re.sub(r"[^a-z ]", "", _fold(title)).strip() in {"hello world", "hei verden"} for title, _, _, _, _ in posts):
         # A default CMS welcome post means the feed still carries theme/demo content: trust none of it.
         return []
-    for title, link, published in posts:
+    for title, link, published, modified, date_source in posts:
         if not title or not link or title.casefold() in PLACEHOLDER_POST_TITLES:
             continue
         if _rd(link) != site_domain:
             continue
-        output.append({"title": title[:300], "url": link, "published_at": published, "date_source": "feed_pubDate" if published else None})
-    return output[:10]
+        output.append({"title": title[:300], "url": link, "published_at": published, "date_source": date_source if published else None,
+                       "modified_at": modified, "modified_date_source": "feed_updated" if modified else None})
+    return output
 
 
 def _date_near(anchor: Any, href: str) -> tuple[str | None, str | None]:
@@ -424,8 +426,10 @@ def _date_near(anchor: Any, href: str) -> tuple[str | None, str | None]:
     for _ in range(4):
         if node is None:
             break
-        time_tag = node.find("time") if hasattr(node, "find") else None
+        time_tag = (node.select_one('time[itemprop~="datePublished"]') or node.find("time")) if hasattr(node, "select_one") else None
         if time_tag is not None:
+            if "datemodified" in str(time_tag.get("itemprop") or "").casefold():
+                return None, None
             parsed = _iso_from_any(str(time_tag.get("datetime") or "")) or parse_date(time_tag.get_text(" ", strip=True))
             if parsed:
                 return parsed, "time_element"
@@ -482,6 +486,16 @@ def extract_index_posts(page: dict[str, Any], index_url: str, site_domain: str) 
             continue
         clean = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
         published, source = _date_near(anchor, href)
+        modified = None
+        node = anchor
+        for _ in range(4):
+            if node is None:
+                break
+            modified_tag = node.select_one('time[itemprop~="dateModified"]')
+            if modified_tag is not None:
+                modified = _iso_from_any(str(modified_tag.get("datetime") or "")) or parse_date(modified_tag.get_text(" ", strip=True))
+                break
+            node = node.parent
         if not published and not (under_index and len([p for p in path[len(index_path):].split("/") if p]) >= 1 and len(title) >= 20):
             continue
         if any(p["title"] == title[:300] for u, p in posts.items() if u != clean):
@@ -489,10 +503,11 @@ def extract_index_posts(page: dict[str, Any], index_url: str, site_domain: str) 
         prior = posts.get(clean)
         if prior and (prior.get("published_at") or not published):
             continue
-        posts[clean] = {"title": title[:300], "url": clean, "published_at": published, "date_source": source}
+        posts[clean] = {"title": title[:300], "url": clean, "published_at": published, "date_source": source,
+                        "modified_at": modified, "modified_date_source": "time_dateModified" if modified else None}
     ordered = sorted(posts.values(), key=lambda p: (p["published_at"] is None, "" if p["published_at"] is None else "~" + p["published_at"]), reverse=False)
     ordered.sort(key=lambda p: p["published_at"] or "", reverse=True)
-    return ordered[:10]
+    return ordered
 
 
 def extract_job_postings(page: dict[str, Any], careers_url: str, site_domain: str) -> tuple[list[dict[str, Any]], bool]:
@@ -802,7 +817,7 @@ def collect_site_signals(profile: dict[str, Any], website_record: dict[str, Any]
     dedup_posts: dict[str, dict[str, Any]] = {}
     for post in news_posts:
         dedup_posts.setdefault(post["url"], post)
-    posts = sorted(dedup_posts.values(), key=lambda p: p.get("published_at") or "", reverse=True)[:10]
+    posts = sorted(dedup_posts.values(), key=lambda p: (p.get("published_at") or "", p["url"]), reverse=True)[:10]
     dedup_jobs: dict[str, dict[str, Any]] = {}
     for posting in careers.get("postings", []):
         dedup_jobs.setdefault(posting["url"] + "|" + posting["title"], posting)
@@ -820,6 +835,15 @@ def collect_site_signals(profile: dict[str, Any], website_record: dict[str, Any]
         "social_profiles": social,
         "social_candidates_unpublished": social_candidates,
         "news_posts": posts,
+        "news_posts_collection": {
+            # Successful response != exhaustive archive. Feeds and indexes often rotate.
+            "collection_complete": False,
+            "window_complete": not errors and len(dedup_posts) <= 10,
+            "window_limit": 10,
+            "observed_count": len(dedup_posts),
+            "returned_count": len(posts),
+            "truncated": len(dedup_posts) > 10,
+        },
         "news_index_pages": news_pages,
         "careers": careers_value,
         "contact": {"emails": list(emails.values()), "phones": list(phones.values())},
@@ -859,12 +883,13 @@ def _sitemap_news(result: dict[str, Any], site_domain: str, budget: _Budget, get
         path = urllib.parse.urlparse(loc).path.casefold()
         if _rd(loc) != site_domain or not re.search(r"/(nyhet|nyheter|aktuelt|news|blogg|blog|presse|press|artikler|articles)/[^/]+", path):
             continue
-        published = _iso_from_any(lastmod) if lastmod else None
+        modified = _iso_from_any(lastmod) if lastmod else None
         slug = [p for p in path.split("/") if p][-1]
-        posts.append({"title": None, "slug": slug[:200], "url": loc, "published_at": published, "date_source": "sitemap_lastmod" if published else None,
+        posts.append({"title": None, "slug": slug[:200], "url": loc, "published_at": None, "date_source": None,
+                      "modified_at": modified, "modified_date_source": "sitemap_lastmod" if modified else None,
                       "evidence": {"source_url": source["final_url"], "retrieved_at": source["retrieved_at"], "content_sha256": source["content_sha256"], "claim_span": f"<loc>{loc[:200]}</loc> <lastmod>{lastmod}</lastmod>"}})
     posts.sort(key=lambda p: p["published_at"] or "", reverse=True)
-    return posts[:10]
+    return posts
 
 
 def _m(budget: _Budget) -> dict[str, Any]:

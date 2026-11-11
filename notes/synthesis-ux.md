@@ -62,9 +62,13 @@ A failing statement is omitted and recorded in `validation.dropped`. This is a c
 integrity check. It is not a general semantic entailment system and cannot independently establish
 that the upstream source or extractor is correct.
 
-**Optional LLM selection** (`polish_with_llm`): runs only if `SIGNALPOST_LLM_API_KEY` is set
+**Optional LLM selection** (`polish_with_llm`): the batch CLI requires `--llm-synthesis` and `SIGNALPOST_LLM_API_KEY`
 (OpenAI-compatible `/chat/completions`; `SIGNALPOST_LLM_BASE_URL`, `SIGNALPOST_LLM_MODEL`
-[default gpt-4o-mini], `SIGNALPOST_LLM_TIMEOUT_S`). `--no-llm-synthesis` disables it.
+[default gpt-4o-mini], `SIGNALPOST_LLM_TIMEOUT_S`). `--no-llm-synthesis` disables it even if opt-in is also supplied.
+The API key alone never opts the CLI into model requests. Provider token usage is retained; an attempted
+request without an explicit provider-reported USD charge is an unknown cost (`null`), not $0.
+This includes rejected output and failed requests. The run report separates known-cost subtotals
+from unknown-cost request counts. No-request deterministic synthesis remains $0.
 The model may select and reorder complete supported statements, but must copy their full text
 and original citations verbatim. The checker normalizes whitespace only. Paraphrasing,
 negation, changing predicates, dropping a clause or citation, and adding free-form unknowns

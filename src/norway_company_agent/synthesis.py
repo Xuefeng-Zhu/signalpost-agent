@@ -11,17 +11,20 @@ entailment test and not independent verification of the underlying source's trut
 
 Optional LLM selection (``polish_with_llm``) may only select and reorder complete checked statements,
 verbatim with their citations. Free factual rewriting is rejected. It is off unless
-``SIGNALPOST_LLM_API_KEY`` is set; rejected output leaves the deterministic synthesis unchanged.
+explicitly requested with ``--llm-synthesis`` and ``SIGNALPOST_LLM_API_KEY`` is set; rejected output leaves the deterministic synthesis unchanged.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import urllib.request
 from typing import Any
 
-SYNTHESIS_VERSION = "evidence_template_synthesis_v2"
+from .registry_state import registry_field, registry_boolean
+
+SYNTHESIS_VERSION = "evidence_template_synthesis_v3"
 
 AVAILABILITY = {
     "available": "available",
@@ -228,59 +231,49 @@ def _identity(b: _Builder) -> None:
     p = b.profile
     reg = _ev(p, "registry")
     raw = reg.get("value") or {}
-    live = _ev(p, "registry_live")
-    if reg.get("status") != "available":
+    def selected(field):
+        item = registry_field(p, field)
+        if item["module"] is None:
+            return item, None, None
+        label = "Brønnøysund entity register (bulk snapshot fallback)" if item["fallback"] else "Brønnøysund entity register (live API)"
+        sid = b.source(label, pointer("evidence", item["module"]), item["record"])
+        return item, sid, pointer("evidence", item["module"], "value", item["key"])
+
+    name, ns, np = selected("name")
+    form, fs, fp = selected("legal_form")
+    if ns:
+        text = f"{name['value']} (org. no. {p.get('organisation_number')})"
+        facts = [(np, name["value"]), (pointer("organisation_number"), p.get("organisation_number"))]
+        cites = [ns]
+        if fs:
+            text += " is a " + LEGAL_FORMS.get(form["value"], str(form["value"]))
+            facts.append((fp, form["value"]))
+            cites.append(fs)
+        if name["fallback"] or form["fallback"]:
+            text += "; identity fields from the bulk snapshot are historical fallbacks where live values are unavailable or unverified"
+        b.say("what_it_does", text + ".", cites, facts)
+    for field, label in (("bankrupt", "bankrupt (konkurs)"), ("liquidating", "under liquidation (under avvikling)"), ("forced_dissolution", "under forced dissolution")):
+        item, sid, ptr = selected(field)
+        if sid and registry_boolean(item["value"]) is True:
+            scope = "The bulk registry snapshot (current live status unavailable or unverified)" if item["fallback"] else "The live register"
+            b.say("what_it_does", f"{scope} marks the entity as {label}.", [sid], [(ptr, item["value"])])
+    emp, sid, ptr = selected("employees")
+    if sid:
+        scope = "The bulk registry snapshot (current live count unavailable or unverified)" if emp["fallback"] else "The live register"
+        b.say("size", f"{scope} reports {_num(emp['value'])} employees.", [sid], [(ptr, emp["value"])])
+    if reg.get("status") != "available" or str(raw.get("organisasjonsnummer") or p.get("organisation_number")) != str(p.get("organisation_number")):
         return
     s_reg = b.source("Brønnøysund entity register (bulk snapshot)", pointer("evidence", "registry"), reg)
     base = pointer("evidence", "registry", "value")
-    name, form, code, label = raw.get("navn"), raw.get("organisasjonsform.kode"), raw.get("naeringskode1.kode"), raw.get("naeringskode1.beskrivelse")
-    city = raw.get("forretningsadresse.poststed") or raw.get("postadresse.poststed")
-    city_key = "forretningsadresse.poststed" if raw.get("forretningsadresse.poststed") else "postadresse.poststed"
-    form_text = LEGAL_FORMS.get(form or "", raw.get("organisasjonsform.beskrivelse") or form or "registered entity")
-    facts = [(base + pointer("navn"), name), (base + pointer("organisasjonsnummer"), raw.get("organisasjonsnummer")), (base + pointer("organisasjonsform.kode"), form)]
-    text = f"{name} (org. no. {raw.get('organisasjonsnummer')}) is a {form_text}"
-    if city:
-        text += f" registered in {city.title()}"
-        facts.append((base + pointer(city_key), city))
-    if code:
-        text += f", classified under industry code (NACE) {code} “{label}”"
-        facts += [(base + pointer("naeringskode1.kode"), code), (base + pointer("naeringskode1.beskrivelse"), label)]
-    b.say("what_it_does", text + ".", [s_reg], facts)
     purpose = raw.get("vedtektsfestetFormaal")
     if purpose:
-        b.say("what_it_does", f"Its registered purpose (vedtektsfestet formål) reads: “{_clean(purpose)}”.", [s_reg], [(base + pointer("vedtektsfestetFormaal"), purpose)])
+        b.say("what_it_does", f"The bulk snapshot’s registered purpose (vedtektsfestet formål) reads: “{_clean(purpose)}”.", [s_reg], [(base + pointer("vedtektsfestetFormaal"), purpose)])
     activity = raw.get("aktivitet")
     if activity and _clean(activity) != _clean(purpose):
-        b.say("what_it_does", f"Registered activity (aktivitet): “{_clean(activity)}”.", [s_reg], [(base + pointer("aktivitet"), activity)])
+        b.say("what_it_does", f"Bulk snapshot registered activity (aktivitet): “{_clean(activity)}”.", [s_reg], [(base + pointer("aktivitet"), activity)])
     founded = raw.get("stiftelsesdato")
     if founded:
         b.say("what_it_does", f"It was founded on {founded} and entered in the Central Coordinating Register on {raw.get('registreringsdatoenhetsregisteret') or 'an unreported date'}.", [s_reg], [(base + pointer("stiftelsesdato"), founded), (base + pointer("registreringsdatoenhetsregisteret"), raw.get("registreringsdatoenhetsregisteret"))])
-    flags = []
-    for key, label_text in (("konkurs", "bankrupt (konkurs)"), ("underAvvikling", "under liquidation (under avvikling)"), ("underTvangsavviklingEllerTvangsopplosning", "under forced dissolution")):
-        if str(raw.get(key)).lower() == "true":
-            flags.append((key, label_text))
-    if flags:
-        b.say("what_it_does", "The register marks the entity as " + " and ".join(t for _, t in flags) + ".", [s_reg], [(base + pointer(k), raw.get(k)) for k, _ in flags])
-
-    # employees: prefer the live registry value
-    live_value = live.get("value") or {}
-    if live.get("status") == "available" and live_value.get("employees") is not None:
-        s_live = b.source("Brønnøysund entity register (live API)", pointer("evidence", "registry_live"), live)
-        when = raw.get("registreringsdatoAntallAnsatteEnhetsregisteret") if str(raw.get("antallAnsatte")) == str(live_value.get("employees")) else None
-        text = f"The register reports {_num(live_value['employees'])} employees"
-        facts = [(pointer("evidence", "registry_live", "value", "employees"), live_value["employees"])]
-        cites = [s_live]
-        if when:
-            text += f" (count registered {when})"
-            facts.append((base + pointer("registreringsdatoAntallAnsatteEnhetsregisteret"), when))
-            cites.append(s_reg)
-        b.say("size", text + ".", cites, facts)
-    elif raw.get("antallAnsatte") and str(raw.get("harRegistrertAntallAnsatte")).lower() == "true":
-        b.say("size", f"The register reports {raw['antallAnsatte']} employees.", [s_reg], [(base + pointer("antallAnsatte"), raw["antallAnsatte"])])
-    elif str(raw.get("harRegistrertAntallAnsatte")).lower() == "true":
-        b.say("size", "The register flags that employees are registered (harRegistrertAntallAnsatte) but does not publish the count.", [s_reg], [(base + pointer("harRegistrertAntallAnsatte"), raw["harRegistrertAntallAnsatte"]), (base + pointer("antallAnsatte"), raw.get("antallAnsatte"))])
-    elif str(raw.get("harRegistrertAntallAnsatte")).lower() == "false":
-        b.say("size", "The register shows no registered employees (harRegistrertAntallAnsatte = false).", [s_reg], [(base + pointer("harRegistrertAntallAnsatte"), raw["harRegistrertAntallAnsatte"])])
 
 
 def _description(b: _Builder) -> None:
@@ -498,26 +491,33 @@ def _digital(b: _Builder) -> None:
         order = sorted(range(len(ads)), key=lambda i: str(ads[i].get("published_at") or ""), reverse=True)
         cites = [b.source("Nav arbeidsplassen job ad (employer org. no. match)", pointer("evidence", "nav_jobs", "value", "postings", i, "evidence"), ads[i].get("evidence") or {}) for i in order[:5]]
         first = ads[order[0]]
-        text = f"Nav’s job-vacancy feed has {len(ads)} active ad{'s' if len(ads) != 1 else ''} whose employer is this company or one of its registered sub-units; the newest is “{_clean(first.get('title'), 120)}”"
+        latest_label = "the newest by publication date among the checked dated ads" if first.get("published_at") else "one checked ad"
+        text = f"The checked Nav job-vacancy feed records confirm at least {len(ads)} active ad{'s' if len(ads) != 1 else ''} whose employer is this company or one of its registered sub-units; {latest_label} is “{_clean(first.get('title'), 120)}”"
         facts = [(pointer("evidence", "nav_jobs", "value", "postings"), [a.get("uuid") for a in ads]), (pointer("evidence", "nav_jobs", "value", "postings", order[0], "title"), first.get("title"))]
+        if first.get("published_at"):
+            facts.append((pointer("evidence", "nav_jobs", "value", "postings", order[0], "published_at"), first["published_at"]))
         if first.get("expires_at"):
             text += f", open until {first['expires_at']}"
             facts.append((pointer("evidence", "nav_jobs", "value", "postings", order[0], "expires_at"), first["expires_at"]))
+        if (nav.get("value") or {}).get("collection_complete") is not True:
+            text += "; collection completeness is unknown or incomplete, so additional active ads may exist"
         b.say("hiring", text + ".", cites, facts)
     news = value.get("news_posts") or []
     dated = sorted([(i, n) for i, n in enumerate(news) if n.get("published_at")], key=lambda x: x[1]["published_at"], reverse=True)
     if dated:
         i, n = dated[0]
         cites = [b.source("Verified company website (news/blog)", vptr + pointer("news_posts", j, "evidence"), x.get("evidence") or {}) for j, x in dated[:3]]
-        text = f"The verified site carries {len(dated)} dated news/blog post{'s' if len(dated) != 1 else ''}; the latest, dated {n['published_at']}, is “{_clean(n.get('title') or n.get('url'), 120)}”"
+        text = f"The checked site records include {len(dated)} dated news/blog post{'s' if len(dated) != 1 else ''}; the latest by publication date among these observed posts, dated {n['published_at']}, is “{_clean(n.get('title') or n.get('url'), 120)}”"
         b.say("recent_activity", text + ".", cites, [(vptr + pointer("news_posts"), [x.get("url") for _, x in dated]), (vptr + pointer("news_posts", i, "published_at"), n["published_at"]), (vptr + pointer("news_posts", i, "title" if n.get("title") else "url"), n.get("title") or n.get("url"))])
     elif news:
         cites = [b.source("Verified company website (news/blog)", vptr + pointer("news_posts", 0, "evidence"), news[0].get("evidence") or {})]
-        b.say("recent_activity", f"The verified site has {len(news)} news/blog item{'s' if len(news) != 1 else ''} without a publication date.", cites, [(vptr + pointer("news_posts"), [x.get("url") for x in news])])
+        b.say("recent_activity", f"The checked site records include {len(news)} news/blog item{'s' if len(news) != 1 else ''} without a publication date.", cites, [(vptr + pointer("news_posts"), [x.get("url") for x in news])])
 
 
 CHANGE_LABELS = {
     "registry.name": "Legal name", "registry.legal_form": "Legal form", "registry.employees": "Employee count (register)",
+    "registry.bankrupt": "Bankruptcy status", "registry.liquidating": "Liquidation status",
+    "registry.forced_dissolution": "Forced dissolution status",
     "registry.municipality": "Municipality",
     "registry.website": "Registered website", "registry.latest_submitted_accounts": "Latest submitted accounts year",
     "financials.records": "Annual accounts", "financial_history.years": "Annual-account copies",
@@ -532,6 +532,12 @@ def _describe_change(change: dict) -> str:
     field = change.get("field")
     old, new = change.get("old_value"), change.get("new_value")
     label = CHANGE_LABELS.get(field, field)
+    if field in {"registry.bankrupt", "registry.liquidating", "registry.forced_dissolution"}:
+        phrase = {"registry.bankrupt": "bankrupt", "registry.liquidating": "under liquidation", "registry.forced_dissolution": "under forced dissolution"}[field]
+        def status(value):
+            flag = registry_boolean(value)
+            return phrase if flag is True else f"not marked as {phrase}" if flag is False else "unknown"
+        return f"{label}: {status(old)} → {status(new)}."
     if field == "roles.roles":
         def keyset(rows):
             def text(value):
@@ -579,6 +585,8 @@ def _changes(b: _Builder, refresh: dict | None, changes: list[dict] | None) -> d
             facts.append((pointer("changes", index, "previous_verified_value"), change["previous_verified_value"]))
         elif change.get("change_type") == "previous_source_unavailable":
             text = f"The previous {module} source observation was unavailable, so this result is not reported as a confirmed company change."
+        elif change.get("change_type") == "collection_window_changed":
+            text = f"The observed {module} collection window changed; coverage is incomplete or unknown, so missing items are not confirmed removals."
         elif change.get("change_type") == "source_changed":
             text = "The registry observations came from different sources, so their differences are not reported as confirmed company changes."
         else:
@@ -603,7 +611,7 @@ def _changes(b: _Builder, refresh: dict | None, changes: list[dict] | None) -> d
     count = len([c for c in changes or [] if c.get("material", True)])
     text = f"{count} material change{'s' if count != 1 else ''} since the previous snapshot." if count else "No material changes since the previous snapshot in the tracked fields."
     if failed:
-        text = (text if count else "No material changes were confirmed in the comparable tracked fields.") + " Some source observations were unavailable; the comparison is incomplete (see below)."
+        text = (text if count else "No material changes were confirmed in the comparable tracked fields.") + " Some source observations were unavailable or collection coverage was incomplete or unknown; the comparison is incomplete (see below)."
     return {"status": "compared", "count": count, "refresh_failures": len(failed), "previous": refresh.get("previous"), "text": text}
 
 
@@ -622,7 +630,8 @@ def _unknowns(b: _Builder) -> tuple[list[dict], dict]:
             entry["retrieved_at"] = record.get("retrieved_at")
         states[key] = entry
 
-    put("registry_identity", _status(_ev(p, "registry")), "Brønnøysund entity register", _ev(p, "registry"))
+    identity = registry_field(p, "name")
+    put("registry_identity", identity["status"], identity["note"] or "Brønnøysund live entity register", identity["record"])
     fin = _ev(p, "financials")
     recs = (fin.get("value") or {}).get("records") or []
     put("financials", _status(fin) if not (fin.get("status") == "available" and not recs) else "not_available", "Regnskapsregisteret annual accounts" + ("" if recs or fin.get("status") != "available" else ": no filed accounts returned"), fin)
@@ -633,9 +642,8 @@ def _unknowns(b: _Builder) -> tuple[list[dict], dict]:
     put("locations", _status(loc), "Brønnøysund sub-unit register" + (" (checked: zero sub-units)" if loc.get("status") == "available" and not (loc.get("value") or {}).get("locations") else ""), loc)
     grp = _ev(p, "group")
     put("group", _status(grp), "Brønnøysund group structure" + (": not part of a registered group" if grp.get("status") == "not_found" else ""), grp)
-    emp_known = (_ev(p, "registry_live").get("value") or {}).get("employees") is not None or bool(raw.get("antallAnsatte"))
-    flag = str(raw.get("harRegistrertAntallAnsatte")).lower()
-    put("employees", "available" if emp_known else "not_available", "Brønnøysund entity register: " + ("employee count published" if emp_known else "employees flagged as registered but the count is not published" if flag == "true" else "no registered employees"), _ev(p, "registry_live") or _ev(p, "registry"))
+    emp = registry_field(p, "employees")
+    put("employees", emp["status"], emp["note"] or "Brønnøysund live entity register: employee count published", emp["record"])
     if web.get("official_website"):
         put("official_website", "available", "identity-verified site", web)
     else:
@@ -656,13 +664,19 @@ def _unknowns(b: _Builder) -> tuple[list[dict], dict]:
     if nav_jobs or site_jobs:
         put("job_postings", "available", "Nav job-vacancy feed (employer org. no. match)" + (" and company careers pages" if site_jobs else ""), nav)
     else:
-        put("job_postings", "not_available" if nav.get("status") in ("available", "not_found") else _status(nav), "Nav job-vacancy feed checked: no active ad with this org number or its sub-units" + ("; company careers pages checked" if fs.get("job_postings") else ""), nav)
+        put("job_postings", "not_available" if nav.get("status") in ("available", "not_found") else _status(nav), "No active ads confirmed in the checked Nav records for this org number or its sub-units; this is not an exhaustive absence claim" + ("; company careers pages checked" if fs.get("job_postings") else ""), nav)
 
     unknowns = []
     for key, label in INFO_TYPES:
         entry = states.get(key)
         if entry and entry["state"] != "available":
             unknowns.append({"info_type": key, "label": label, **entry})
+    for module, field, label in (("nav_jobs", "job_postings", "Additional Nav job ads"), ("site_signals", "news_posts", "Additional news/blog posts")):
+        record = _ev(p, module)
+        value = record.get("value") or {}
+        coverage = value if module == "nav_jobs" else value.get("news_posts_collection") or {}
+        if record.get("status") == "available" and coverage.get("collection_complete") is not True:
+            unknowns.append({"info_type": field + "_coverage", "label": label, "state": "not_available", "reason": "Collection is incomplete or completeness is unknown; observed items do not establish the total or an exhaustive latest item."})
     return unknowns, states
 
 
@@ -850,12 +864,12 @@ def llm_config() -> dict[str, str] | None:
     }
 
 
-def _chat(config: dict[str, str], messages: list[dict]) -> str:
+def _chat(config: dict[str, str], messages: list[dict]) -> dict:
     body = json.dumps({"model": config["model"], "messages": messages, "temperature": 0}).encode()
     request = urllib.request.Request(config["base_url"] + "/chat/completions", data=body, headers={"Authorization": f"Bearer {config['api_key']}", "Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=float(config["timeout"])) as response:  # noqa: S310 - fixed, configured endpoint
         payload = json.loads(response.read())
-    return payload["choices"][0]["message"]["content"]
+    return {"content": payload["choices"][0]["message"]["content"], "usage": payload.get("usage"), "model": payload.get("model"), "response_id": payload.get("id")}
 
 
 def check_narrative(narrative: str, synthesis: dict[str, Any]) -> list[str]:
@@ -892,14 +906,36 @@ def polish_with_llm(synthesis: dict[str, Any], config: dict[str, str] | None = N
         {"role": "system", "content": "Select up to 6 of the supplied statements for a concise company overview. Copy each selected text VERBATIM in full, even when it contains several sentences, then a space and ALL its citation markers in the supplied order, e.g. [S1][S3]. You may only select and reorder complete statements. Do not paraphrase, combine, shorten, explain, add headings, or add unknowns. Separate selections with whitespace."},
         {"role": "user", "content": json.dumps({"statements": facts}, ensure_ascii=False)},
     ]
+    accounting = {"requests": 1, "cost_usd": None, "cost_status": "unknown", "cost_provenance": "Provider request attempted; no verified USD charge supplied."}
     try:
-        narrative = chat(config, messages).strip()
+        response = chat(config, messages)
+        if isinstance(response, dict):
+            accounting.update({"usage": response.get("usage"), "provider_model": response.get("model"), "response_id": response.get("response_id")})
+            # Only an explicitly USD-denominated reported charge is actual cost.
+            charge = (response.get("usage") or {}).get("cost_usd")
+            if isinstance(charge, (int, float)) and not isinstance(charge, bool) and math.isfinite(charge) and charge >= 0:
+                accounting.update(cost_usd=charge, cost_status="provider_reported", cost_provenance="Provider response usage.cost_usd")
+            narrative = response.get("content", "").strip()
+        else:
+            narrative = response.strip()
     except Exception as exc:  # noqa: BLE001 - optional step never fails the run
-        synthesis["llm_polish"] = {"status": "failed", "model": config["model"], "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        synthesis["llm_polish"] = {"status": "failed", "model": config["model"], "error": f"{type(exc).__name__}: {str(exc)[:160]}", "accounting": accounting}
         return synthesis
     problems = check_narrative(narrative, synthesis)
     if problems:
         synthesis["llm_polish"] = {"status": "rejected_by_post_check", "model": config["model"], "problems": problems[:8]}
     else:
         synthesis["llm_polish"] = {"status": "accepted", "model": config["model"], "narrative": narrative, "post_check": "verbatim selection of complete supported statements with unchanged citations; no free rewriting"}
+    synthesis["llm_polish"]["accounting"] = accounting
     return synthesis
+
+
+def synthesis_cost(synthesis: dict | None) -> dict:
+    """Unknown attempted-call billing must never be reported as a free run."""
+    polish = (synthesis or {}).get("llm_polish") or {}
+    accounting = polish.get("accounting")
+    if accounting:
+        return accounting
+    if polish.get("status", "not_attempted") in {"not_attempted", "not_configured"}:
+        return {"requests": 0, "cost_usd": 0, "cost_status": "not_incurred", "cost_provenance": "No LLM request attempted."}
+    return {"requests": 1, "cost_usd": None, "cost_status": "unknown", "cost_provenance": "LLM attempt without billing metadata."}

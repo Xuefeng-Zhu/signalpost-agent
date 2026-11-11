@@ -47,7 +47,9 @@ def competing_legal_names(legal_name: Any, texts: list[Any], body_texts: list[An
     # ``texts`` are identity statements (title, structured names, site name): prefix qualifiers count
     # there. ``body_texts`` are flattened page text, where menus and headings run straight into the
     # name ("HELE SAKEN Egil Ulvan Rederi AS"), so only a qualifier between the name and its legal
-    # form ("Consto Bergen AS") or a different legal form counts.
+    # form ("Consto Bergen AS") or a different legal form counts without corroboration.
+    # Body prefixes need corroboration from explicit identity fields.
+    identity_tokens = set(_tokens(" ".join(str(text or "") for text in texts)))
     tagged = [(text, True) for text in texts] + [(text, False) for text in (body_texts or [])]
     for text, allow_prefix in tagged:
         for match in _LEGAL_SUFFIX_RE.finditer(str(text or "")):
@@ -85,6 +87,17 @@ def competing_legal_names(legal_name: Any, texts: list[Any], body_texts: list[An
                         or word.casefold() in _NAME_INTRODUCERS or word.endswith(("-", ":", "|"))):
                     break
                 start -= 1
+            if not allow_prefix and start > 0:
+                # Flattening loses H1/footer boundaries. A prefix is meaningful when
+                # independently corroborated by the title/site name. Repeating a
+                # menu label does not turn it into a legal-name prefix. H1/footer
+                # boundaries are captured separately as identity statements.
+                prefix = words[start - 1]
+                bare = prefix.strip("'-&")
+                if (_same_case(prefix) and bare.casefold() not in _NAME_INTRODUCERS
+                        and not prefix.endswith(("-", ":", "|"))
+                        and set(_tokens(prefix)) & (identity_tokens - core_set)):
+                    start -= 1
             words = words[start:]
             window = _tokens(" ".join(words))
             form = match.group(2).casefold().replace("/", "")
@@ -93,6 +106,53 @@ def competing_legal_names(legal_name: Any, texts: list[Any], body_texts: list[An
                 if phrase not in found:
                     found.append(phrase)
     return found
+
+
+def html_identity_statements(soup: Any) -> list[str]:
+    """Preserve explicit identity-node boundaries before HTML is flattened.
+
+    Body/menu words are not identity statements. Footer navigation is excluded,
+    and independent footer blocks remain separate so menu text cannot become a
+    spurious legal-name prefix. Inline spans within a name remain joined.
+    """
+    import json
+    from bs4 import BeautifulSoup
+
+    names: list[str] = []
+    def add(value: Any) -> None:
+        text = " ".join(str(value or "").split())
+        if text and len(text) <= 500 and text not in names:
+            names.append(text)
+    for node in soup.select('h1, [itemprop="legalName"], meta[property="og:site_name"]'):
+        if not node.find_parent(["nav", "menu"]):
+            add(node.get("content") or node.get_text(" ", strip=True))
+    for footer in soup.select('footer, [role="contentinfo"]'):
+        cleaned = BeautifulSoup(str(footer), "lxml")
+        for node in cleaned.select("nav, menu, ul, ol, script, style, [role=navigation]"):
+            node.decompose()
+        blocks = cleaned.select("p, div, address, section")
+        for block in blocks:
+            if not block.select("p, div, address, section"):
+                add(block.get_text(" ", strip=True))
+        for block in cleaned.select("p, div, address, section"):
+            if block.parent is not None:
+                block.decompose()
+        add(cleaned.get_text(" ", strip=True))
+    def legal_names(value: Any) -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("legalName"), str):
+                add(value["legalName"])
+            for child in value.values():
+                legal_names(child)
+        elif isinstance(value, list):
+            for child in value:
+                legal_names(child)
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            legal_names(json.loads(script.get_text()))
+        except (ValueError, TypeError):
+            pass
+    return names[:50]
 
 
 def _structured_names(value: Any) -> list[str]:
@@ -118,7 +178,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     rendered = value.get("js_fallback") or {}
     homepage_identity_parts = [
         value.get("title"), value.get("description"), value.get("identity_text_excerpt"), hostname, *structured_names,
-        rendered.get("title"),
+        rendered.get("title"), *value.get("identity_statements", []),
     ]
     candidate_parts = [
         *homepage_identity_parts, value.get("main_text_excerpt"),
@@ -202,7 +262,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
         "reasons": reasons,
         "org_number_proof": org_proof,
         "competing_legal_names": competing,
-        "method": "deterministic_name_org_evidence_v4",
+        "method": "deterministic_name_org_evidence_v5",
     }
 
 

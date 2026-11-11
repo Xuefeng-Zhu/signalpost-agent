@@ -100,13 +100,13 @@ Wider **identity pages**: a candidate whose joined host label contains a legal-n
 as promising, so its contact/about pages are fetched; up to 4 identity subpages, padded with fallback paths
 (`/kontakt`, `/om-oss`, `/kontakt-oss`, `/personvern`, `/om`).
 
-**Headless fallback** (`js_render.py`): when a promising candidate's static homepage is a JS shell (little text +
-scripts / SPA markers) and has no proof, the homepage and one identity page from the rendered DOM are rendered in
-headless Chromium (images/fonts/media and private/loopback hosts blocked, robots.txt checked, same registered
-domain only, counts against the request cap, max 3 concurrent browsers). Rendered pages go through the same gate
-and are marked `rendered: true`. Playwright is the optional `browser` extra; `run_signalpost.sh` installs it and
-`chromium-headless-shell` best-effort, and the run continues statically if either is missing
-(`operations.js_render` in the report says which). `SIGNALPOST_JS_FALLBACK=0` turns it off.
+**Headless fallback suspended** (`js_render.py`): the original Revision 2 fallback rendered JS shells in
+Chromium. That path is now disabled unconditionally because this repository does not provide a verified
+connection-level public-network boundary. DNS validation alone cannot prevent browser DNS rebinding or
+every browser-managed connection. `SIGNALPOST_JS_FALLBACK=1` does not override this safety restriction.
+The entry point no longer installs Chromium. Discovery continues using static HTML, with lower expected
+coverage on JS-only sites; `operations.js_render` explains the restriction. Offline URL/DNS tests exercise
+the defensive policy, not a claim of live Chromium isolation.
 
 Budget: discovery cap 14 → 20 requests per company, deadline 40 → 45 s, up to 16 candidates (DNS-checked in parallel).
 

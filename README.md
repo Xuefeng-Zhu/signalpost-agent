@@ -129,15 +129,18 @@ does, size and latest filed accounts with reporting period, people, locations an
 footprint, hiring, dated activity, what changed, and an explicit unknowns list. Every statement cites
 source ids that resolve to URLs + retrieval times + hashes in the profile evidence, and the run's
 validation re-checks every statement (`synthesis_present_and_every_statement_supported`). The
-synthesis is deterministic and keyless. An optional LLM polish runs only when
-`SIGNALPOST_LLM_API_KEY` is set (OpenAI-compatible; `SIGNALPOST_LLM_BASE_URL`, default
+synthesis is deterministic and keyless. An optional LLM polish runs only with explicit
+`--llm-synthesis` and `SIGNALPOST_LLM_API_KEY` set (OpenAI-compatible; `SIGNALPOST_LLM_BASE_URL`, default
 `https://api.openai.com/v1`; `SIGNALPOST_LLM_MODEL`, default `gpt-4o-mini`; `SIGNALPOST_LLM_TIMEOUT_S`).
 The optional model may only select and reorder complete verified statements, copied verbatim with
 all their original citations. Free factual rewriting is rejected; matching numbers and names alone
 does not establish factual support. Statement text, fact values, and source pointers/metadata are
 also checked against deterministic regeneration from the profile. This verifies output integrity,
 not the independent truth of the source. `--no-llm-synthesis` forces the optional model off. We ship
-no key; with no key the declared third-party cost stays $0.
+no key; without an attempted model request the declared third-party cost stays $0. Model response
+usage is retained. If the provider does not return an explicit USD charge, attempted model calls
+have `third_party_cost_usd: null` and an unknown-cost status, including rejected or failed calls.
+Known-cost subtotals never stand in for an unknown total. A configured key alone triggers no call.
 
 ## Review site (find, verify, compare)
 
@@ -208,9 +211,12 @@ Email the repository URL, run command, models/APIs and expected cost per 100-com
   and brand-shaped legal-name runs (`jeistad.no`). A brand-shaped domain is published only with homepage proof,
   so chain/franchise sites that list the entity on a store page stay unpublished.
 - More identity pages per candidate (host-label name match, up to 4 contact/about/privacy pages with fallbacks).
-- Optional headless-Chromium fallback for JS-only sites (`src/norway_company_agent/js_render.py`, extra
-  `browser`). `run_signalpost.sh` installs it best-effort; without it the run is unchanged and static.
-  `SIGNALPOST_JS_FALLBACK=0` disables it. The report's `operations.js_render` shows whether it ran.
+- The previous headless-Chromium fallback is suspended for safety. The crawler now uses static HTML
+  only; `SIGNALPOST_JS_FALLBACK=1` cannot enable rendering, and `run_signalpost.sh` no longer installs a
+  browser. Application-level DNS checks cannot guarantee Chromium's actual connections remain public
+  under DNS rebinding or browser network bypasses. A verified connection-level network boundary is
+  required before rendering can return. JS-only website recall can therefore be lower.
+  The report's `operations.js_render` records the disabled state and reason.
 - Fixes: Nav cache temp-file race (it failed the whole Nav module in ops-003), list-valued role names in the
   change description, and the review site tolerating a failed synthesis.
 - Measurements: `notes/website-discovery.md` (Revision 2). Smoke test at this commit: `out/smoke6/report.json`.

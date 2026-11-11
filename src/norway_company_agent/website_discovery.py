@@ -177,6 +177,8 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
     soup = BeautifulSoup(html, "lxml")
     title = soup.title.get_text(" ", strip=True)[:300] if soup.title else ""
     links = [(str(a.get("href") or ""), a.get_text(" ", strip=True)) for a in soup.select("a[href]")]
+    from .identity import html_identity_statements
+    identity_statements = html_identity_statements(soup)
     text = _visible_text(soup)
     folded = _ascii_fold(text)
     numbers = find_org_numbers(text)
@@ -190,6 +192,7 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
     street_words = (hints or {}).get("street_words") or []
     signals = {
         "title": title,
+        "identity_statements": identity_statements,
         "target_org_number_found": bool(target_hits),
         "target_org_span": target_hits[0]["span"][:200] if target_hits else None,
         "other_valid_org_numbers": others[:10],
@@ -204,7 +207,7 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
     if legal_name:
         from .identity import competing_legal_names  # local import: identity imports this module
 
-        signals["competing_legal_names"] = competing_legal_names(legal_name, [title], [text[:20000]])[:5]
+        signals["competing_legal_names"] = competing_legal_names(legal_name, [title, *identity_statements], [text[:20000]])[:5]
     return {"signals": signals, "links": links}
 
 

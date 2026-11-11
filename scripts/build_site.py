@@ -19,7 +19,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from norway_company_agent.synthesis import AVAILABILITY, LEGAL_FORMS, ROLE_LABELS, ROLE_ORDER, build_synthesis  # noqa: E402
+from norway_company_agent.synthesis import AVAILABILITY, LEGAL_FORMS, ROLE_LABELS, ROLE_ORDER, build_synthesis, check_narrative, validate_synthesis, SYNTHESIS_VERSION  # noqa: E402
+
+from norway_company_agent.registry_state import registry_boolean, registry_field  # noqa: E402
 
 TEMPLATE = Path(__file__).with_name("site_template.html")
 
@@ -56,36 +58,74 @@ def _num(value: Any) -> Any:
 
 def slim(profile: dict, dataset: str, envelope: dict | None = None) -> dict:
     org = profile["organisation_number"]
-    synthesis = (envelope or {}).get("synthesis") or profile.get("synthesis") or build_synthesis(profile)
+    cached_synthesis = (envelope or {}).get("synthesis") or profile.get("synthesis") or {}
     changes = (envelope or {}).get("changes") or profile.get("changes") or []
     refresh = (envelope or {}).get("refresh") or profile.get("refresh")
+    # Saved summaries are not trusted across template revisions. Rebuild from
+    # evidence, and retain optional prose only if it exactly matches fresh facts.
+    current_cache = cached_synthesis.get("method") == SYNTHESIS_VERSION
+    if current_cache:
+        try:
+            current_cache = not validate_synthesis(cached_synthesis, {**profile, "changes": changes})["failures"]
+        except (KeyError, TypeError, ValueError):
+            current_cache = False
+    synthesis = build_synthesis(profile, changes=changes if current_cache else None, refresh=refresh if current_cache else None)
+    historical_changes = not current_cache and bool(changes or (refresh or {}).get("company_in_previous_snapshot"))
+    if historical_changes:
+        synthesis["what_changed"] = {
+            "status": "historical_changes_not_revalidated", "count": None,
+            "text": "Historical change records were not revalidated against both snapshots during site generation; no confirmed change claims are shown.",
+        }
+        changes = []
+    polish = cached_synthesis.get("llm_polish") or {}
+    if polish.get("status") == "accepted" and not check_narrative(polish.get("narrative"), synthesis):
+        synthesis["llm_polish"] = polish
     reg = _ev(profile, "registry")
     raw = reg.get("value") or {}
     live = _ev(profile, "registry_live")
-    lv = live.get("value") or {}
     facts: list[dict] = []
-    s_reg, s_live = _src(reg), _src(live)
+    s_reg = _src(reg)
+
+    selected = {key: registry_field(profile, key) for key in (
+        "name", "legal_form", "bankrupt", "liquidating", "forced_dissolution", "employees", "business_address")}
+    def selected_fact(label: str, key: str, display: Any = None) -> dict:
+        item = selected[key]
+        return fact("Identity", label, item["value"] if display is None else display,
+                    item["status"], _src(item["record"]), item["note"])
 
     # identity
-    facts.append(fact("Identity", "Legal name", raw.get("navn") or profile.get("name"), _state(reg), s_reg))
+    facts.append(selected_fact("Legal name", "name"))
     facts.append(fact("Identity", "Organisation number", org, _state(reg), s_reg))
-    form = raw.get("organisasjonsform.kode") or profile.get("legal_form")
-    facts.append(fact("Identity", "Legal form", f"{form} – {LEGAL_FORMS.get(form or '', raw.get('organisasjonsform.beskrivelse') or '')}".strip(" –"), _state(reg), s_reg))
+    form = selected["legal_form"]["value"]
+    facts.append(selected_fact("Legal form", "legal_form", f"{form} – {LEGAL_FORMS.get(form, '')}".strip(" –") if form else None))
     if raw.get("naeringskode1.kode"):
         facts.append(fact("Identity", "Industry (NACE)", f"{raw['naeringskode1.kode']} {raw.get('naeringskode1.beskrivelse') or ''}".strip(), _state(reg), s_reg))
     facts.append(fact("Identity", "Registered purpose (vedtektsfestet formål)", raw.get("vedtektsfestetFormaal") or None, "available" if raw.get("vedtektsfestetFormaal") else "not_available", s_reg))
     if raw.get("aktivitet"):
         facts.append(fact("Identity", "Registered activity", raw["aktivitet"], "available", s_reg))
     facts.append(fact("Identity", "Founded", raw.get("stiftelsesdato") or None, "available" if raw.get("stiftelsesdato") else "not_available", s_reg))
-    addr = lv.get("business_address") or {}
+    addr = selected["business_address"]["value"] or {}
     if addr:
-        facts.append(fact("Identity", "Business address", ", ".join((addr.get("adresse") or []) + [f"{addr.get('postnummer') or ''} {addr.get('poststed') or ''}".strip()]), _state(live), s_live))
-    employees = lv.get("employees")
-    flag = str(raw.get("harRegistrertAntallAnsatte")).lower()
-    facts.append(fact("Identity", "Employees (register)", employees, "available" if employees is not None else "not_available", s_live if employees is not None else s_reg,
-                      None if employees is not None else ("count registered but not published" if flag == "true" else "no registered employees")))
-    status_flags = [label for key, label in (("konkurs", "bankrupt"), ("underAvvikling", "under liquidation"), ("underTvangsavviklingEllerTvangsopplosning", "forced dissolution")) if str(raw.get(key)).lower() == "true"]
-    facts.append(fact("Identity", "Register status flags", ", ".join(status_flags) or "none (not bankrupt, not in liquidation)", _state(reg), s_reg))
+        facts.append(selected_fact("Business address", "business_address", ", ".join((addr.get("adresse") or []) + [f"{addr.get('postnummer') or ''} {addr.get('poststed') or ''}".strip()])))
+    employees = selected["employees"]["value"]
+    facts.append(selected_fact("Employees (register)", "employees"))
+    flag_values = []
+    flag_sources = []
+    flag_notes = []
+    for key, label in (("bankrupt", "bankrupt"), ("liquidating", "in liquidation"), ("forced_dissolution", "under forced dissolution")):
+        item = selected[key]
+        boolean = registry_boolean(item["value"])
+        flag_values.append(label if boolean is True else "not " + label if boolean is False else label + ": unknown")
+        flag_sources.append({"field": key, **_src(item["record"])})
+        facts.append(fact("Identity", {"bankrupt": "Bankruptcy status", "liquidating": "Liquidation status", "forced_dissolution": "Forced dissolution status"}[key],
+                          label if boolean is True else "not " + label if boolean is False else None,
+                          item["status"], _src(item["record"]), item["note"]))
+        if item["note"]:
+            flag_notes.append(label + ": " + item["note"])
+    known_flags = any(registry_boolean(selected[key]["value"]) is not None for key in ("bankrupt", "liquidating", "forced_dissolution"))
+    source = {**next((_src(selected[key]["record"]) for key in ("bankrupt", "liquidating", "forced_dissolution") if selected[key]["module"]), {}), "fields": flag_sources}
+    facts.append(fact("Identity", "Register status flags", "; ".join(flag_values),
+                      "available" if known_flags else "not_available", source, "; ".join(flag_notes) or None))
 
     # financials
     fin = _ev(profile, "financials")
@@ -198,7 +238,7 @@ def slim(profile: dict, dataset: str, envelope: dict | None = None) -> dict:
     statements = {s["id"]: s for s in synthesis.get("statements") or []}
     return {
         "org": org,
-        "name": raw.get("navn") or profile.get("name"),
+        "name": selected["name"]["value"] or profile.get("name"),
         "ds": dataset,
         "form": form,
         "city": (addr.get("poststed") or raw.get("forretningsadresse.poststed") or profile.get("municipality") or "").title(),

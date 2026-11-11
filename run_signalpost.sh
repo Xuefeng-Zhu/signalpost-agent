@@ -11,16 +11,9 @@ PREV="${3:-}"
 RUN_ID="${SIGNALPOST_RUN_ID:-run-$(date -u +%Y%m%dT%H%M%SZ)}"
 BULK="${SIGNALPOST_BULK:-brreg-enheter.csv}"
 mkdir -p "$OUT"
-# Optional headless-Chromium fallback for JS-only sites (SIGNALPOST_JS_FALLBACK=0 turns it off).
-# Best effort: if the extra or the browser cannot be installed, the run continues without it.
-UV_EXTRA=()
-if [ "${SIGNALPOST_JS_FALLBACK:-1}" != "0" ] && uv sync --frozen --extra browser; then
-  UV_EXTRA=(--extra browser)
-  timeout 180 uv run --frozen ${UV_EXTRA[@]+"${UV_EXTRA[@]}"} playwright install chromium-headless-shell >/dev/null 2>&1 \
-    || echo "note: chromium not installed; JS-only sites are checked statically" >&2
-else
-  uv sync --frozen
-fi
+# Browser rendering is suspended until a connection-level public-network boundary exists.
+# Do not install or launch Chromium as a side effect of the static crawler entry point.
+uv sync --frozen
 if [ ! -s "$BULK" ]; then
   curl -fsSL 'https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv' -o "$BULK.tmp" && mv "$BULK.tmp" "$BULK"
 fi
@@ -30,4 +23,4 @@ ARGS=(--organisations "$IN" --bulk "$BULK"
       --report "$OUT/report.json" --run-id "$RUN_ID" --expected-count "$COUNT"
       --site-dir "$OUT/site")
 if [ -n "$PREV" ]; then ARGS+=(--previous-profiles "$PREV"); fi
-exec uv run --frozen ${UV_EXTRA[@]+"${UV_EXTRA[@]}"} python scripts/run_competition_batch.py "${ARGS[@]}"
+exec uv run --frozen python scripts/run_competition_batch.py "${ARGS[@]}"

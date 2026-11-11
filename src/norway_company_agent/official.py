@@ -185,6 +185,7 @@ def normalize_entity(body: Any) -> dict[str, Any]:
         "employees": body.get("antallAnsatte"),
         "bankrupt": body.get("konkurs"),
         "liquidating": body.get("underAvvikling"),
+        "forced_dissolution": body.get("underTvangsavviklingEllerTvangsopplosning"),
         "website": body.get("hjemmeside"),
         "email": body.get("epostadresse"),
         "industry": body.get("naeringskode1"),

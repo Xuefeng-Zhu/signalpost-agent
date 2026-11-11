@@ -153,21 +153,35 @@ def normalize_social_url(url: str) -> dict[str, str] | None:
     parts = [part.strip() for part in parsed.path.split("/") if part.strip()]
     lowered = [part.casefold() for part in parts]
     rejected_first = {
-        "facebook": {"sharer", "sharer.php", "share.php", "dialog", "policy.php", "privacy", "events", "groups", "plugins"},
+        "facebook": {
+            "sharer", "sharer.php", "share.php", "dialog", "policy.php", "privacy", "events", "groups", "plugins",
+            "photo.php", "photo", "photos", "story.php", "stories", "permalink.php",
+            "watch", "video.php", "video", "videos", "reel", "reels", "posts",
+            "share", "l.php", "login", "login.php", "home.php", "search", "marketplace",
+        },
         "instagram": {"p", "reel", "reels", "stories", "explore"},
         "x": {"intent", "share", "home", "search", "i"},
     }
     if not parts or lowered[0] in rejected_first.get(platform, set()):
         return None
-    if platform == "facebook" and lowered[0] == "profile.php":
-        return None
+    if platform == "facebook":
+        if lowered[0] == "profile.php":
+            return None
+        # Reject content routes instead of asserting their author owns a company profile.
+        if len(parts) > 1 and not (
+            lowered[0] == "p" and len(parts) == 2
+            or lowered[0] in {"people", "pages"} and len(parts) == 3 and parts[2].isdigit()
+        ):
+            return None
     if platform == "linkedin" and (lowered[0] != "company" or len(parts) < 2):
         return None
     if platform == "youtube" and lowered[0] not in {"channel", "user", "c"} and not parts[0].startswith("@"):
         return None
     if host == "youtu.be":
         return None
-    if platform == "tiktok" and not parts[0].startswith("@"):
+    if platform == "tiktok" and (not parts[0].startswith("@") or len(parts) != 1):
+        return None
+    if platform == "instagram" and len(parts) != 1:
         return None
     if platform == "x" and len(parts) != 1:
         return None
@@ -222,10 +236,12 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
                 return None, [], 2, len(raw), elapsed, "redirected outside registered domain"
         page_html = raw.decode("utf-8", errors="replace")
         page_soup = BeautifulSoup(page_html, "lxml")
+        from .identity import html_identity_statements
         page_text = trafilatura.extract(page_html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
         page = {
             "url": final_url,
             "title": page_soup.title.get_text(" ", strip=True)[:500] if page_soup.title else "",
+            "identity_statements": html_identity_statements(page_soup),
             "main_text_excerpt": page_text[:5000],
             "content_sha256": __import__("hashlib").sha256(raw).hexdigest(),
         }
@@ -295,6 +311,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             assert_public_url(final_url)
         html = raw.decode("utf-8", errors="replace")
         soup = BeautifulSoup(html, "lxml")
+        from .identity import html_identity_statements
         structured = extruct.extract(html, base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"])
         text = trafilatura.extract(html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
@@ -305,6 +322,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             "final_url": final_url,
             "registered_domain": _registered_domain(final_url),
             "title": title[:500],
+            "identity_statements": html_identity_statements(soup),
             "description": description[:2000],
             "main_text_excerpt": text[:5000],
             "social_links": _social_links(final_url, soup),

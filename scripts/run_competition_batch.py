@@ -16,11 +16,12 @@ from norway_company_agent.official import fetch_official_modules  # noqa: E402
 from norway_company_agent.website_discovery import resolve_official_website  # noqa: E402
 from norway_company_agent.site_signals import collect_site_signals  # noqa: E402
 from norway_company_agent.nav_jobs import NavJobsFeed, collect_nav_jobs  # noqa: E402
+from norway_company_agent.registry_state import registry_field
 from norway_company_agent.refresh import classify_refresh_failures, diff_profile  # noqa: E402
-from norway_company_agent.synthesis import build_synthesis, llm_config, polish_with_llm  # noqa: E402
+from norway_company_agent.synthesis import build_synthesis, llm_config, polish_with_llm, synthesis_cost  # noqa: E402
 
 
-def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None, use_llm: bool = True, workers: int = 8) -> dict:
+def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None, use_llm: bool = False, workers: int = 8) -> dict:
     """Diff against the previous snapshot (if supplied) and build the evidence-bounded synthesis.
 
     Pure post-processing on data already fetched: no network unless the optional LLM polish is configured.
@@ -102,6 +103,14 @@ def attach_refresh_and_synthesis(profiles: list[dict], previous_path: str | None
             key = "accepted" if status == "accepted" else "rejected" if status.startswith("rejected") else "failed"
             llm[key] += 1
         llm["model"] = config["model"]
+    accounting = [synthesis_cost(p.get("synthesis")) for p in profiles]
+    known = [item["cost_usd"] for item in accounting if item["cost_usd"] is not None]
+    llm["requests"] = sum(item["requests"] for item in accounting)
+    llm["cost_usd"] = sum(known) if len(known) == len(accounting) else None
+    llm["known_cost_usd"] = sum(known)
+    llm["unknown_cost_requests"] = sum(item["requests"] for item in accounting if item["cost_usd"] is None)
+    llm["cost_status"] = "unknown" if llm["cost_usd"] is None else "provider_reported" if llm["requests"] else "not_incurred"
+    llm["cost_provenance"] = "Per-company LLM accounting; unknown requests excluded from known subtotal, never treated as zero."
     statements = [len(p["synthesis"]["statements"]) for p in profiles]
     stats["synthesis"] = {
         "method": next((p["synthesis"]["method"] for p in profiles if p["synthesis"].get("method") != "synthesis_failed"), None),
@@ -138,6 +147,8 @@ def valid_checkpoint_row(row, modules: list[str]) -> bool:
     metadata and values without maintaining a second, drifting module schema.
     """
     if not valid_profile_row(row):
+        return False
+    if any(not isinstance(record.get("status"), str) for record in row.get("evidence", {}).values()):
         return False
     import copy
     try:
@@ -311,6 +322,7 @@ def main() -> None:
     parser.add_argument("--nav-window-days", type=int, default=183, help="Nav job feed sync window (ads are active at most ~6 months)")
     parser.add_argument("--nav-cache", default=".cache/nav-job-feed-headers.jsonl.gz", help="Declared external cache of Nav feed headers ('' disables)")
     parser.add_argument("--previous-profiles", default=None, help="Previous run's profiles (or envelopes) JSONL; enables material-change output")
+    parser.add_argument("--llm-synthesis", action="store_true", help="Opt in to potentially paid LLM selection using SIGNALPOST_LLM_API_KEY")
     parser.add_argument("--no-llm-synthesis", action="store_true", help="Never call the optional LLM polish even if SIGNALPOST_LLM_API_KEY is set")
     parser.add_argument("--site-dir", default=None, help="Also build the static review site into this directory")
     parser.add_argument("--modules", default="registry,accounting_obligation,registry_live,financials,roles,group,locations,website,site_signals,nav_jobs")
@@ -352,11 +364,15 @@ def main() -> None:
             }
             metrics = []
         profile["evidence"].update(records)
-        live = (records.get("registry_live") or {})
-        if profile.get("registry_bulk_missing") and live.get("status") == "available" and isinstance(live.get("value"), dict):
-            for key in ("name", "legal_form"):
-                if profile.get(key) is None and live["value"].get(key) is not None:
-                    profile[key] = live["value"][key]
+        # Downstream identity gates must see the same entity-matched identity as
+        # the synthesis. Keep the original bulk evidence intact for provenance.
+        profile["registry_identity_fields"] = {}
+        for key in ("name", "legal_form"):
+            selected = registry_field(profile, key)
+            profile[key] = selected["value"]
+            profile["registry_identity_fields"][key] = {
+                field: selected[field] for field in ("module", "key", "status", "fallback", "note")
+            }
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": [], "dns_lookups": 0}
         extra = {"requests": 0, "bytes": 0, "latencies_ms": []}
         site_requests = nav_requests = 0
@@ -483,7 +499,7 @@ def main() -> None:
         nav_sync_summary = nav_feed.summary()
     completed_at = utc_now()
     ordered_profiles = [state[org] for org in orgs]
-    refresh_summary = attach_refresh_and_synthesis(ordered_profiles, args.previous_profiles, use_llm=not args.no_llm_synthesis, workers=args.workers)
+    refresh_summary = attach_refresh_and_synthesis(ordered_profiles, args.previous_profiles, use_llm=args.llm_synthesis and not args.no_llm_synthesis, workers=args.workers)
     envelopes = [
         terminal_envelope(profile, run_id=args.run_id, modules=requested_modules, started_at=started_at, completed_at=completed_at)
         for profile in ordered_profiles
@@ -496,7 +512,8 @@ def main() -> None:
     operations["p50_ms"] = latencies[len(latencies) // 2] if latencies else None
     operations["runtime_s"] = round(__import__("time").monotonic() - run_clock, 1)
     operations["wall_s_including_bulk_scan_and_nav_sync"] = round(__import__("time").monotonic() - wall_clock, 1)
-    operations["third_party_cost_usd"] = 0
+    operations["third_party_cost_usd"] = refresh_summary["synthesis"]["llm_polish"]["cost_usd"]
+    operations["llm_accounting"] = refresh_summary["synthesis"]["llm_polish"]
     from norway_company_agent import js_render
     operations["js_render"] = js_render.status()
     if nav_sync_summary:

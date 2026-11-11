@@ -894,8 +894,12 @@ class WebsiteTests(unittest.TestCase):
         self.assertEqual(_extraction_state("A" * 100, shell), "static_complete")
 
     def test_blocks_local_network_targets(self):
+        import socket
+        from urllib.parse import urlparse
         for url in ("http://127.0.0.1/admin", "http://localhost/", "http://169.254.169.254/latest/meta-data"):
-            with self.subTest(url=url), self.assertRaises(ValueError):
+            address = "127.0.0.1" if urlparse(url).hostname == "localhost" else urlparse(url).hostname
+            answers = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 80))]
+            with self.subTest(url=url), patch("norway_company_agent.website.socket.getaddrinfo", return_value=answers), self.assertRaises(ValueError):
                 assert_public_url(url)
 
 
