@@ -118,3 +118,15 @@ def test_body_still_catches_inner_qualifier_and_other_form():
 
     assert competing_legal_names("CONSTO AS", [], ["Kontakt Consto Bergen AS i dag"]) == ["Consto Bergen AS"]
     assert competing_legal_names("CONSTO AS", [], ["Om oss: CONSTO ASA"]) == ["CONSTO ASA"]
+
+
+def test_third_party_number_on_product_page_does_not_block_address_proof():
+    owner = profile()
+    pages = [
+        page(owner, "<title>Consto</title><body>Velkommen</body>"),
+        page(owner, "<body>CONSTO AS, Strandgaten 1, 5003 Bergen</body>", "https://example.no/pages/om-oss"),
+        page(owner, f"<body>Støtt Redningsselskapet org.nr {OTHER}</body>", "https://example.no/products/rs-redningsselskapet"),
+    ]
+    assert assess_org_proof(pages)["publishable"]
+    pages[2]["url"] = "https://example.no/kontakt"
+    assert not assess_org_proof(pages)["publishable"]

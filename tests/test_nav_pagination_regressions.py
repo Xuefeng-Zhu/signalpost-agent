@@ -251,3 +251,18 @@ def test_untrusted_cache_remains_on_disk_if_rebuild_fails(tmp_path, monkeypatch)
     assert feed.status == "incomplete"
     assert feed.headers == {}
     assert feed.cache_path.read_bytes() == original
+
+
+def test_quiet_tail_404_is_confirmed_by_a_widened_read(tmp_path, monkeypatch):
+    feed = feed_with_cache(tmp_path, monkeypatch)
+    calls = []
+    def get(path, since=None):
+        calls.append(since)
+        if len(calls) == 1:
+            return 404, None, b""
+        return 200, {"items": [item("fresh", status="ACTIVE", ts=NOW - timedelta(hours=5))], "next_url": None}, b""
+    monkeypatch.setattr(feed, "_get", get)
+    feed.sync(now=NOW)
+    assert feed.status == "synced"
+    assert calls[1] == calls[0] - timedelta(hours=24)
+    assert "fresh" in feed.headers

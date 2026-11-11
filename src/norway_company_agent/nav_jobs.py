@@ -133,7 +133,7 @@ class NavJobsFeed:
         raise RuntimeError(f"Nav feed request failed: {type(last).__name__}: {str(last)[:120]}")
 
     # -- feed sync ---------------------------------------------------------
-    def _segment(self, start: datetime, end: datetime | None, max_pages: int) -> list[dict[str, Any]]:
+    def _segment(self, start: datetime, end: datetime | None, max_pages: int, _widened: bool = False) -> list[dict[str, Any]]:
         if max_pages < 1:
             raise IncompleteFeedError("Nav feed page limit must be positive")
         path = "/api/v1/feed"
@@ -146,6 +146,11 @@ class NavJobsFeed:
             status, body, _ = self._get(path, since=start if page == 0 else None)
             with self._lock:
                 self.pages += 1
+            if page == 0 and status == 404 and body is None and end is None and not _widened:
+                # Live behaviour (checked Nov 10, 2026): the feed answers 404 when no ad changed after
+                # ``since``. That is not proof by itself, so re-read the open-ended tail from 24 hours
+                # earlier; the widened read must succeed and be exhausted, or the sync stays incomplete.
+                return self._segment(start - timedelta(hours=24), end, max_pages, _widened=True)
             if status != 200 or not isinstance(body, dict) or not isinstance(body.get("items"), list):
                 raise IncompleteFeedError("Nav feed returned an invalid page")
             page_items = body["items"]
@@ -265,7 +270,10 @@ class NavJobsFeed:
         tmp = self.cache_path.with_name(f"{self.cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             with gzip.open(tmp, "wt", encoding="utf-8") as handle:
-                handle.write(json.dumps({"window_days": self.window_days, "synced_until": _iso(now), "source": BASE + "/api/v1/feed"}) + "\n")
+                # A naive checkpoint has no knowable instant (it would depend on the host time zone),
+                # so it is stored as unusable and the next sync rereads the whole window.
+                synced_until = _iso(now) if now.tzinfo is not None else None
+                handle.write(json.dumps({"window_days": self.window_days, "synced_until": synced_until, "source": BASE + "/api/v1/feed"}) + "\n")
                 for record in self.headers.values():
                     ts = _parse_ts(record.get("sistEndret"))
                     if record.get("status") == "ACTIVE" or (ts and ts >= cutoff):

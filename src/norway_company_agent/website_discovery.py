@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import re
+from urllib.parse import urlsplit
 import socket
 import time
 import unicodedata
@@ -207,13 +208,20 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
     return {"signals": signals, "links": links}
 
 
+_CONTENT_PAGE_RE = re.compile(r"/(?:products?|produkter?|collections|kategori|shop|butikk|nettbutikk|blogs?|blogg|news|nyheter|artikler?|articles?|aktuelt|prosjekter?|projects?|referanser|cases?)(?:/|$)", re.I)
+
+
 def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
     """Decide exact-entity identity from per-page signals. ``pages[0]`` must be the homepage."""
     if not pages:
         return {"status": "absent", "publishable": False, "reasons": ["no pages captured"], "method": METHOD}
     home = pages[0].get("identity_signals") or {}
     hits = [page for page in pages if (page.get("identity_signals") or {}).get("target_org_number_found")]
-    others = sorted({number for page in pages for number in (page.get("identity_signals") or {}).get("other_valid_org_numbers", [])})
+    # Another entity's number on a product, shop or article page (a charity product, a supplier, a
+    # customer case) says nothing about who runs the site; on the homepage or an identity page
+    # (contact, about, privacy, terms) it does, and blocks publication.
+    others = sorted({number for index, page in enumerate(pages) if index == 0 or not _CONTENT_PAGE_RE.search(urlsplit(str(page.get("url") or "")).path)
+                     for number in (page.get("identity_signals") or {}).get("other_valid_org_numbers", [])})
     parked = home.get("parked_marker")
     group = next(((page.get("identity_signals") or {}).get("group_marker") for page in pages if (page.get("identity_signals") or {}).get("group_marker")), None)
     against = []
