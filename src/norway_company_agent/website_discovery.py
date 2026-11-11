@@ -232,9 +232,12 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
     if hits:
         page = hits[0]
         where = "homepage" if page is pages[0] else "identity_subpage"
-        if group and where != "homepage":
-            # A group site can list a subsidiary's number on its contact page; only the homepage
-            # identity statement is strong enough when the site presents itself as a group.
+        competing_here = [name for pg in pages for name in (pg.get("identity_signals") or {}).get("competing_legal_names", [])]
+        if group and where != "homepage" and (home.get("group_marker") or others or competing_here):
+            # A site that presents itself as a group on its homepage, or lists other entities' numbers or
+            # names, can show a subsidiary's number on its contact page. A group word only on a subpage
+            # ("konsern" on /kontakt), with this entity's number the only one and no other legal name, is
+            # the entity's own country/operating site (transtema.com/no for TRANSTEMA NORGE AS).
             against.append(f"group/parent marker on the site: {group!r}")
         result = {
             "status": "exact" if not against else "conflict",
@@ -251,8 +254,7 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
         }
         result["publishable"] = result["status"] == "exact"
         return result
-    if group:
-        against.append(f"group/parent marker on the site: {group!r}")
+    group_against = f"group/parent marker on the site: {group!r}" if group else None
     # A shared address cannot resolve contradictory legal names anywhere on the site.
     # Exact organisation-number proof above remains the stronger positive evidence.
     competing = list(dict.fromkeys(
@@ -263,6 +265,10 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
     for page in pages:
         signals = page.get("identity_signals") or {}
         if signals.get("legal_name_present") and signals.get("postcode_present") and signals.get("street_present"):
+            # A group word blocks the weaker name+address proof unless that proof is the homepage's own
+            # identity statement (a parent such as NARVIK BOLIGSTIFTELSE describing its own konsern).
+            if group_against and not (page is pages[0] and not against):
+                against.append(group_against)
             status = "exact" if not against else "conflict"
             return {
                 "status": status,
@@ -279,6 +285,8 @@ def assess_org_proof(pages: list[dict[str, Any]]) -> dict[str, Any]:
                 "method": METHOD,
             }
     # Preserve contradictions for the final gate; name-only fallback must not erase them.
+    if group_against and group_against not in against:
+        against.append(group_against)
     named = any((page.get("identity_signals") or {}).get("legal_name_present") for page in pages)
     return {
         "status": "conflict" if against else "name_only" if named else "absent",
@@ -912,7 +920,7 @@ def resolve_official_website(profile: dict[str, Any], *, discovery: bool = True,
         record = evidence(
             "website", "ambiguous", "discovered_company_website", amb.get("final_url") or f"https://{amb['domain']}/",
             value={"final_url": amb.get("final_url"), "pages": amb.get("pages"), "identity_assessment": amb.get("proof")},
-            note="Candidate site carries the organisation number but also conflicting identity evidence; not published",
+            note="Candidate site has conflicting or incomplete identity evidence; not published",
             content_sha256=(amb.get("pages") or [{}])[0].get("content_sha256"),
         )
         record["registry_website"] = {"status": registry_record.get("status"), "source_url": registry_record.get("source_url"), "note": registry_record.get("note")}

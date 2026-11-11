@@ -115,7 +115,8 @@ def slim(profile: dict, dataset: str, envelope: dict | None = None) -> dict:
     roles.sort(key=lambda r: order.get(r.get("role_code"), 99))
     s_roles = _src(roles_ev)
     for r in roles:
-        name = " ".join(r["name"]) if isinstance(r.get("name"), list) else r.get("name")
+        name = " ".join(str(part) for part in r["name"] if part) if isinstance(r.get("name"), list) else r.get("name")
+        name = str(name or "").strip() or ("Registered entity" if r.get("organisation_number") else "Name not registered")
         facts.append(fact("People", ROLE_LABELS.get(r.get("role_code"), r.get("role") or r.get("role_code") or "Role").split(" (")[0].capitalize(),
                           name + (f" (org. no. {r['organisation_number']})" if r.get("organisation_number") else ""), "available", {**s_roles, "changed": r.get("last_changed")}))
     if not roles:

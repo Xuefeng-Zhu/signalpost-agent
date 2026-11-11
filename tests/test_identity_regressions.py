@@ -130,3 +130,33 @@ def test_third_party_number_on_product_page_does_not_block_address_proof():
     assert assess_org_proof(pages)["publishable"]
     pages[2]["url"] = "https://example.no/kontakt"
     assert not assess_org_proof(pages)["publishable"]
+
+
+def test_group_word_only_on_contact_page_does_not_block_sole_org_number():
+    owner = profile()
+    pages = [
+        page(owner, "<title>Consto</title><body>Velkommen til Consto</body>"),
+        page(owner, f"<body>Kontakt. En del av Consto-konsernet. Org.nr {owner['organisation_number']}</body>", "https://example.no/kontakt"),
+    ]
+    assert assess_org_proof(pages)["publishable"]
+    pages[0] = page(owner, "<title>Consto Konsern</title><body>Våre selskaper</body>")
+    assert not assess_org_proof(pages)["publishable"]
+
+
+def test_group_word_on_subpage_does_not_block_homepage_name_and_address():
+    owner = profile()
+    pages = [
+        page(owner, "<body>CONSTO AS, Strandgaten 1, 5003 Bergen</body>"),
+        page(owner, "<body>Konsernet vårt</body>", "https://example.no/om-oss/miljo"),
+    ]
+    assert assess_org_proof(pages)["publishable"]
+    pages[1] = page(owner, "<body>CONSTO AS, Strandgaten 1, 5003 Bergen</body>", "https://example.no/om-oss")
+    pages[0] = page(owner, "<title>Konsern</title><body>Velkommen</body>")
+    assert not assess_org_proof(pages)["publishable"]
+
+
+def test_bankruptcy_trustee_name_is_read_from_its_own_block():
+    from norway_company_agent.official import normalize_roles
+    body = {"rollegrupper": [{"sistEndret": "2026-10-05", "type": {"kode": "BOBE", "beskrivelse": "Bostyrer"},
+            "roller": [{"avregistrert": False, "bostyrer": {"navn": "Adv. Ida Kollenborg Pettersson"}, "type": {"kode": "BOBE", "beskrivelse": "Bostyrer"}}]}]}
+    assert normalize_roles(body)["roles"][0]["name"] == "Adv. Ida Kollenborg Pettersson"

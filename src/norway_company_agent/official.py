@@ -129,6 +129,13 @@ def normalize_roles(body: Any) -> dict[str, Any]:
             name = person.get("navn") or {}
             entity = item.get("enhet") or {}
             display_name = " ".join(filter(None, [name.get("fornavn"), name.get("mellomnavn"), name.get("etternavn")])) or entity.get("navn")
+            if not display_name:
+                # Some role types carry the holder under their own key, e.g. a bankruptcy trustee:
+                # {"bostyrer": {"navn": "Adv. ..."}}. Use a plain name string from such a block.
+                for key, block in item.items():
+                    if key not in ("type", "person", "enhet") and isinstance(block, dict) and isinstance(block.get("navn"), str):
+                        display_name = block["navn"].strip()
+                        break
             roles.append({
                 "name": display_name or None,
                 "organisation_number": entity.get("organisasjonsnummer"),
