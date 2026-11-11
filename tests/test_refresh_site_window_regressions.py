@@ -65,17 +65,18 @@ def collect(n):
 
 def test_feed_ten_to_eleven_is_a_window_shift_not_deletion():
     old = profile()
-    old['evidence']['site_signals'] = collect(10)
+    cap = ss.MAX_NEWS_POSTS
+    old['evidence']['site_signals'] = collect(cap)
     new = copy.deepcopy(old)
-    new['evidence']['site_signals'] = collect(11)
+    new['evidence']['site_signals'] = collect(cap + 1)
     meta = new['evidence']['site_signals']['value']['news_posts_collection']
-    assert meta == {'collection_complete': False, 'window_complete': False, 'window_limit': 10,
-                    'observed_count': 11, 'returned_count': 10, 'truncated': True}
+    assert meta == {'collection_complete': False, 'window_complete': False, 'window_limit': cap,
+                    'observed_count': cap + 1, 'returned_count': cap, 'truncated': True}
     change, = diff_profile(old, new)
     assert change['material'] is False
     assert change['change_type'] == 'collection_window_changed'
     assert change['observed_missing_ids'] == ['https://acme.no/news/1']
-    assert change['observed_added_ids'] == ['https://acme.no/news/11']
+    assert change['observed_added_ids'] == [f'https://acme.no/news/{cap + 1}']
 
 
 def test_legacy_news_without_completeness_cannot_prove_deletion():

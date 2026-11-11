@@ -45,6 +45,9 @@ NEWS_TERMS = ("nyheter", "aktuelt", "news", "presse", "press", "blogg", "blog", 
 CAREER_TERMS = ("ledige-stillinger", "ledige stillinger", "karriere", "career", "jobbe-hos-oss", "jobbe hos oss", "jobb hos oss", "stillinger", "jobs", "jobb", "vacancies", "rekruttering", "join-us", "join us", "bli med")
 CONTACT_TERMS = ("kontakt", "contact", "om-oss", "om oss", "about")
 SERVICE_TERMS = ("tjenester", "tjeneste", "produkter", "produkt", "services", "service", "products", "vi-tilbyr", "vi tilbyr", "hva-vi-gjor", "hva vi gjør", "sortiment", "losninger", "løsninger", "solutions", "fagomrader", "fagområder", "virksomhetsomrader")
+MAX_NEWS_POSTS = 25
+MAX_JOB_POSTINGS = 40
+MAX_ATS_AD_CHECKS = 6
 ATS_HOSTS = ("jobbnorge.no", "webcruiter.no", "webcruiter.com", "teamtailor.com", "recman.no", "recman.page", "hrmanager.no", "easycruit.com", "reachmee.com", "jobylon.com", "talentech.com", "varbi.com", "emply.com", "workable.com", "lever.co", "greenhouse.io", "smartrecruiters.com", "finn.no/job", "arbeidsplassen.nav.no", "simployer.com", "zalaris", "talmundo")
 JOB_PATH = re.compile(r"/(?:job|jobs|jobb|stilling|stillinger|ad|ads|vacancy|vacancies|position|positions|career|careers|karriere|o)/[^/?#]+", re.I)
 NO_VACANCY = re.compile(r"(ingen\s+ledige\s+stillinger|ingen\s+utlyste\s+stillinger|har\s+ingen\s+ledige|no\s+(?:current\s+)?(?:open\s+positions|vacancies|openings))", re.I)
@@ -538,7 +541,7 @@ def extract_job_postings(page: dict[str, Any], careers_url: str, site_domain: st
             continue
         clean = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", parsed.query if on_ats else "", ""))
         postings.setdefault(clean, {"title": text[:200], "url": clean, "date_posted": None, "valid_through": None, "method": method})
-    return list(postings.values())[:20], bool(NO_VACANCY.search(page["text"]))
+    return list(postings.values())[:MAX_JOB_POSTINGS], bool(NO_VACANCY.search(page["text"]))
 
 
 def _parse_page(result: dict[str, Any]) -> dict[str, Any]:
@@ -591,6 +594,109 @@ def _pick_link(links: list[tuple[str, str]], terms: tuple[str, ...], site_domain
                     best = candidate
                 break
     return best[2] if best else None
+
+
+OPEN_APPLICATION = re.compile(r"(open[\s-]+application|apen[\s-]+soknad|åpen[\s-]+søknad|spontaneous|generell[\s-]+soknad|general[\s-]+application)", re.I)
+
+
+def ats_listing_url(ats_url: str) -> str:
+    """Public job-list page for an ATS career site the verified site links to."""
+    parsed = urllib.parse.urlparse(ats_url)
+    host = (parsed.hostname or "").casefold()
+    if host.endswith(".teamtailor.com") and parsed.path.rstrip("/") in ("", "/jobs"):
+        return f"{parsed.scheme}://{parsed.netloc}/jobs"
+    return ats_url
+
+
+def postings_from_ats_page(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """Job ads on an ATS listing page, minus standing open-application entries."""
+    host_domain = _rd(page["url"])
+    postings, _ = extract_job_postings(page, "", host_domain)
+    kept = []
+    for posting in postings:
+        if OPEN_APPLICATION.search(posting["title"]) or OPEN_APPLICATION.search(posting["url"].replace("-", " ")):
+            continue
+        if posting["method"] == "ats_job_link":
+            posting["method"] = "ats_listing_linked_from_verified_site"
+        kept.append(posting)
+    return kept
+
+
+def _ats_listing_postings(ats_url: str, budget: "_Budget", fetched: list, errors: list) -> list[dict[str, Any]]:
+    """Fetch the ATS job list the company's own verified site links to (robots.txt respected)."""
+    url = ats_listing_url(ats_url)
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    robots = urllib.robotparser.RobotFileParser()
+    try:
+        robots_result = _fetch(base + "/robots.txt", budget, max_bytes=300_000)
+        if robots_result.get("ok") and robots_result.get("status") == 200:
+            robots.parse(robots_result["raw"].decode("utf-8", errors="replace").splitlines())
+        elif robots_result.get("status") in (401, 403):
+            errors.append({"url": url, "kind": "ats_listing", "error": "robots.txt not readable"})
+            return []
+        else:
+            robots.parse([])
+        if not robots.can_fetch(USER_AGENT, url):
+            errors.append({"url": url, "kind": "ats_listing", "error": "robots.txt disallows"})
+            return []
+        result = _fetch(url, budget)
+    except _Exhausted:
+        raise
+    fetched.append({"url": url, "kind": "ats_listing", "status": result.get("status"), "content_sha256": result.get("content_sha256"), "retrieved_at": result.get("retrieved_at")})
+    if not result.get("ok"):
+        errors.append({"url": url, "kind": "ats_listing", "error": result.get("error")})
+        return []
+    if _rd(result["final_url"]) != _rd(url):
+        errors.append({"url": url, "kind": "ats_listing", "error": "ATS page redirected to another domain"})
+        return []
+    page = _parse_page(result)
+    kept: list[dict[str, Any]] = []
+    # A group's shared ATS can list sister companies' and foreign offices' jobs. Each ad is
+    # kept only when its own JobPosting markup places it in Norway and it has not expired.
+    for posting in postings_from_ats_page(page)[:MAX_ATS_AD_CHECKS]:
+        if not robots.can_fetch(USER_AGENT, posting["url"]) or budget.requests >= budget.max_requests:
+            break
+        ad = _fetch(posting["url"], budget)
+        fetched.append({"url": posting["url"], "kind": "ats_ad", "status": ad.get("status"), "content_sha256": ad.get("content_sha256"), "retrieved_at": ad.get("retrieved_at")})
+        if not ad.get("ok") or _rd(ad["final_url"]) != _rd(url):
+            continue
+        ad_page = _parse_page(ad)
+        verdict = ats_ad_in_norway(ad_page)
+        if not verdict:
+            continue
+        posting.update(verdict)
+        posting["url"] = ad_page["url"]
+        posting["evidence"] = _ev(ad_page, f'{posting["title"]} | addressCountry=NO')
+        kept.append(posting)
+    return kept
+
+
+def ats_ad_in_norway(page: dict[str, Any], today: str | None = None) -> dict[str, Any] | None:
+    """Dates from an ATS ad's JobPosting markup when it lists a Norwegian job location and is not expired."""
+    today = today or utc_now()[:10]
+    for node in page["jsonld"]:
+        for item in _walk(node):
+            if "JobPosting" not in _types(item):
+                continue
+            locations = item.get("jobLocation") or []
+            locations = locations if isinstance(locations, list) else [locations]
+            countries = set()
+            for loc in locations:
+                address = (loc or {}).get("address") if isinstance(loc, dict) else None
+                country = address.get("addressCountry") if isinstance(address, dict) else None
+                if isinstance(country, dict):
+                    country = country.get("name")
+                if country:
+                    countries.add(str(country).strip().casefold())
+            if not countries & {"no", "nor", "norway", "norge"}:
+                continue
+            valid = _iso_from_any(str(item.get("validThrough") or ""))
+            if valid and valid[:10] < today:
+                continue
+            return {"date_posted": _iso_from_any(str(item.get("datePosted") or "")), "valid_through": valid,
+                    "hiring_organization": ((item.get("hiringOrganization") or {}).get("name") if isinstance(item.get("hiringOrganization"), dict) else None)}
+    return None
 
 
 def _ats_link(links: list[tuple[str, str]]) -> str | None:
@@ -756,6 +862,8 @@ def collect_site_signals(profile: dict[str, Any], website_record: dict[str, Any]
             careers["ats_url"] = {"url": ats_url, "evidence": _ev(pages[-1] if careers_url and len(pages) > 1 else home, f"link to {ats_url}")}
             if not careers["pages"]:
                 careers["pages"].append({"url": ats_url, "evidence": careers["ats_url"]["evidence"]})
+            if budget.requests < budget.max_requests:
+                careers["postings"].extend(_ats_listing_postings(ats_url, budget, fetched, errors))
         # Job postings embedded straight on the homepage.
         home_postings, _ = extract_job_postings(home, careers_url or "", site_domain)
         for posting in home_postings:
@@ -817,12 +925,12 @@ def collect_site_signals(profile: dict[str, Any], website_record: dict[str, Any]
     dedup_posts: dict[str, dict[str, Any]] = {}
     for post in news_posts:
         dedup_posts.setdefault(post["url"], post)
-    posts = sorted(dedup_posts.values(), key=lambda p: (p.get("published_at") or "", p["url"]), reverse=True)[:10]
+    posts = sorted(dedup_posts.values(), key=lambda p: (p.get("published_at") or p.get("modified_at") or "", p["url"]), reverse=True)[:MAX_NEWS_POSTS]
     dedup_jobs: dict[str, dict[str, Any]] = {}
     for posting in careers.get("postings", []):
         dedup_jobs.setdefault(posting["url"] + "|" + posting["title"], posting)
     careers_value = careers
-    careers_value["postings"] = list(dedup_jobs.values())[:20]
+    careers_value["postings"] = list(dedup_jobs.values())[:MAX_JOB_POSTINGS]
 
     states["social_profiles"] = "available" if social else ("ambiguous" if social_candidates else "not_found")
     states["news_posts"] = "available" if posts else "not_found"
@@ -838,11 +946,11 @@ def collect_site_signals(profile: dict[str, Any], website_record: dict[str, Any]
         "news_posts_collection": {
             # Successful response != exhaustive archive. Feeds and indexes often rotate.
             "collection_complete": False,
-            "window_complete": not errors and len(dedup_posts) <= 10,
-            "window_limit": 10,
+            "window_complete": not errors and len(dedup_posts) <= MAX_NEWS_POSTS,
+            "window_limit": MAX_NEWS_POSTS,
             "observed_count": len(dedup_posts),
             "returned_count": len(posts),
-            "truncated": len(dedup_posts) > 10,
+            "truncated": len(dedup_posts) > MAX_NEWS_POSTS,
         },
         "news_index_pages": news_pages,
         "careers": careers_value,
