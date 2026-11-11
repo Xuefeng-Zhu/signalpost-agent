@@ -108,6 +108,54 @@ def competing_legal_names(legal_name: Any, texts: list[Any], body_texts: list[An
     return found
 
 
+_REGISTRY_NAME_CACHE: dict[str, Any] = {}
+_REGISTRY_NAME_LOCK = __import__("threading").Lock()
+BRREG_NAME_SEARCH = "https://data.brreg.no/enhetsregisteret/api/enheter?navn={name}&size=50"
+
+
+def registered_under_other_number(name: str, own_org: str) -> bool | None:
+    """Is ``name`` the exact registered legal name of a different entity? None when unknown.
+
+    A competing legal name read from page text ("Miljøfyrtårn Invisible Connections AS" from a badge
+    beside the footer name) is only a conflict when the Central Coordinating Register has an entity
+    with that exact name under another number ("Bergen Consto AS" next to CONSTO AS). Lookup errors
+    return None, and the caller then keeps the conflict (fail closed).
+    """
+    import json
+    import os
+    import urllib.parse
+    import urllib.request
+
+    if os.environ.get("SIGNALPOST_REGISTRY_NAME_CHECK", "1") == "0":
+        return None
+    wanted = " ".join(_tokens(name)) + "|" + "".join(re.findall(r"\b(ASA|AS|ANS|DA|SA|BA|ENK|NUF|STIFTELSE)\b", str(name).upper())[-1:])
+    with _REGISTRY_NAME_LOCK:
+        if wanted in _REGISTRY_NAME_CACHE:
+            hits = _REGISTRY_NAME_CACHE[wanted]
+            return None if hits is None else any(org != own_org for org in hits)
+    hits: list[str] | None
+    try:
+        url = BRREG_NAME_SEARCH.format(name=urllib.parse.quote(str(name).strip()))
+        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "signalpost-agent (public registry lookup)"})
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed public registry host
+            body = json.loads(response.read(2_000_000))
+        hits = []
+        for entity in (body.get("_embedded") or {}).get("enheter", []):
+            if " ".join(_tokens(entity.get("navn"))) + "|" + "".join(re.findall(r"\b(ASA|AS|ANS|DA|SA|BA|ENK|NUF|STIFTELSE)\b", str(entity.get("navn")).upper())[-1:]) == wanted:
+                hits.append(str(entity.get("organisasjonsnummer")))
+    except Exception:  # noqa: BLE001 - unknown, caller fails closed
+        hits = None
+    with _REGISTRY_NAME_LOCK:
+        _REGISTRY_NAME_CACHE[wanted] = hits
+    return None if hits is None else any(org != own_org for org in hits)
+
+
+def registry_confirmed_competitors(names: list[str], own_org: Any) -> list[str]:
+    """Drop competing names the register proves are not another entity's legal name."""
+    own = re.sub(r"\D", "", str(own_org or ""))
+    return [name for name in names if registered_under_other_number(name, own) is not False]
+
+
 def html_identity_statements(soup: Any) -> list[str]:
     """Preserve explicit identity-node boundaries before HTML is flattened.
 
@@ -215,6 +263,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     substantive_homepage = len(str(value.get("main_text_excerpt") or "").strip()) >= 100
     competing = competing_legal_names(profile.get("name"), [part for part in homepage_identity_parts if part is not value.get("identity_text_excerpt")],
                                       [value.get("identity_text_excerpt"), value.get("main_text_excerpt"), rendered.get("main_text_excerpt")])
+    competing = registry_confirmed_competitors(competing, profile.get("organisation_number"))
     is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I))
     if incompatible_org_numbers:
         score = 0.5

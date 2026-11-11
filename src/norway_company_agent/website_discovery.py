@@ -109,7 +109,9 @@ _OPENER = urllib.request.build_opener(_ChainRedirectHandler())
 
 def valid_org_number(digits: str) -> bool:
     """Brreg modulus-11 check digit (weights 3,2,7,6,5,4,3,2)."""
-    if not re.fullmatch(r"\d{9}", digits or ""):
+    # Organisation numbers are issued from the 8xx/9xx series; a mod-11-valid 000000000, 171649366
+    # or 310000000 (phone, ID or placeholder) is not another entity's number.
+    if not re.fullmatch(r"[89]\d{8}", digits or ""):
         return False
     weights = (3, 2, 7, 6, 5, 4, 3, 2)
     total = sum(int(d) * w for d, w in zip(digits[:8], weights))
@@ -207,7 +209,10 @@ def page_identity_signals(html: str | bytes, hints: dict[str, Any] | None) -> di
     if legal_name:
         from .identity import competing_legal_names  # local import: identity imports this module
 
-        signals["competing_legal_names"] = competing_legal_names(legal_name, [title, *identity_statements], [text[:20000]])[:5]
+        from .identity import registry_confirmed_competitors
+
+        signals["competing_legal_names"] = registry_confirmed_competitors(
+            competing_legal_names(legal_name, [title, *identity_statements], [text[:20000]])[:5], (hints or {}).get("organisation_number"))
     return {"signals": signals, "links": links}
 
 
