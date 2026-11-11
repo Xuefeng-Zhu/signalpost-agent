@@ -364,8 +364,8 @@ function jumpCite(id) {
   const li = document.getElementById(`src-${id}`);
   if (!li) return;
   li.scrollIntoView({behavior: "smooth", block: "center"});
-  li.classList.add("flash"); li.focus({preventScroll: true});
-  setTimeout(() => li.classList.remove("flash"), 1600);
+  document.querySelectorAll(".sources li.flash").forEach(x => x.classList.remove("flash"));
+  li.classList.add("flash"); li.setAttribute("tabindex", "-1"); li.focus({preventScroll: true});
 }
 
 /* ---------- compare ---------- */
